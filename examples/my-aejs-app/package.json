@@ -9,6 +9,7 @@
         "build-forge": "tsc --project forge.tsconfig.json",
         "start": "electron-forge start",
         "pack-tarballs": "npm --prefix ../../ pack --workspaces",
+        "prepackage": "npm run build",
         "package": "electron-forge package",
         "make": "electron-forge make",
         "publish": "electron-forge publish",
