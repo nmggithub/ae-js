@@ -7,6 +7,7 @@
 #include <napi.h>
 
 #include <stdexcept>
+#include <type_traits>
 #include <vector>
 
 namespace ae_js_bridge {
@@ -115,6 +116,30 @@ public:
 
     Napi::Function ctor =
         Derived::DefineClass(env, Derived::JSClassName, properties);
+
+    // Don't set the prototype chain for AEDescriptor itself.
+    if constexpr (!std::is_same_v<Derived, AEDescriptor>) {
+      Napi::Value objectValue = env.Global().Get("Object");
+      if (objectValue.IsObject()) {
+        Napi::Object object = objectValue.As<Napi::Object>();
+        Napi::Value setPrototypeOfValue = object.Get("setPrototypeOf");
+        if (setPrototypeOfValue.IsFunction()) {
+          Napi::Function setPrototypeOf =
+              setPrototypeOfValue.As<Napi::Function>();
+          Napi::Value baseCtorValue = exports.Get("AEDescriptor");
+          if (baseCtorValue.IsFunction()) {
+            Napi::Function baseCtor = baseCtorValue.As<Napi::Function>();
+            Napi::Value ctorPrototype = ctor.Get("prototype");
+            Napi::Value basePrototype = baseCtor.Get("prototype");
+            if (ctorPrototype.IsObject() && basePrototype.IsObject()) {
+              setPrototypeOf.Call(object, {ctorPrototype, basePrototype});
+            }
+            setPrototypeOf.Call(object, {ctor, baseCtor});
+          }
+        }
+      }
+    }
+
     constructor = Napi::Persistent(ctor);
     constructor.SuppressDestruct();
     exports.Set(Derived::JSClassName, ctor);
