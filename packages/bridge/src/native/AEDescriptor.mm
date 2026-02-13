@@ -69,8 +69,12 @@ Napi::Object ReadKeyedItemsOrThrow(Napi::Env env, const AEDesc *source,
       return Napi::Object::New(env);
     }
 
-    result.Set(FourCharCodeToStringOrThrow(env, keyword),
-               AEDescriptor::WrapAEDesc(env, new AEDesc(itemDesc)));
+    Napi::Value wrappedItem = CopyAndWrapAEDescOrThrow(env, &itemDesc);
+    AEDisposeDesc(&itemDesc);
+    if (env.IsExceptionPending()) {
+      return Napi::Object::New(env);
+    }
+    result.Set(FourCharCodeToStringOrThrow(env, keyword), wrappedItem);
   }
 
   return result;
@@ -321,8 +325,12 @@ Napi::Value AEListDescriptor::GetItemsOrThrow(const Napi::CallbackInfo &info) {
       return env.Null();
     }
 
-    result.Set(static_cast<uint32_t>(index - 1),
-               AEDescriptor::WrapAEDesc(env, new AEDesc(itemDesc)));
+    Napi::Value wrappedItem = CopyAndWrapAEDescOrThrow(env, &itemDesc);
+    AEDisposeDesc(&itemDesc);
+    if (env.IsExceptionPending()) {
+      return env.Null();
+    }
+    result.Set(static_cast<uint32_t>(index - 1), wrappedItem);
   }
 
   return result;
@@ -470,7 +478,9 @@ AEEventDescriptor::GetTargetOrThrow(const Napi::CallbackInfo &info) {
                                 "AEGetAttributeDesc(keyAddressAttr) failed")) {
     return env.Null();
   }
-  return AEDescriptor::WrapAEDesc(env, new AEDesc(targetDesc));
+  Napi::Value wrappedTarget = CopyAndWrapAEDescOrThrow(env, &targetDesc);
+  AEDisposeDesc(&targetDesc);
+  return wrappedTarget;
 }
 
 Napi::Value
@@ -519,7 +529,9 @@ AEEventDescriptor::GetAttributeOrThrow(const Napi::CallbackInfo &info) {
     return env.Undefined();
   }
 
-  return AEDescriptor::WrapAEDesc(env, new AEDesc(attributeDesc));
+  Napi::Value wrappedAttribute = CopyAndWrapAEDescOrThrow(env, &attributeDesc);
+  AEDisposeDesc(&attributeDesc);
+  return wrappedAttribute;
 }
 
 std::vector<Napi::ClassPropertyDescriptor<AEEventDescriptor>>
