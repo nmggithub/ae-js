@@ -213,8 +213,8 @@ declare module '#ae_js_bridge_native' {
      * @param eventID - The event ID of the Apple event to handle.
      * @param handler - The handler function to call when an AppleEvent
      *  is received with the given event class and event ID.
-     * The handler function must return a Record<AEKeyword, AEDescriptor>
-     *  if a reply is expected, or null if a reply is not expected.
+     * The handler function should return an object of parameters if
+     *  a reply is expected, or null if a reply is not expected.
      */
     export function handleAppleEvent(
         eventClass: AEEventClass,

@@ -12,6 +12,7 @@ import {
     handleAppleEvent,
     unhandleAppleEvent,
 } from './native.js';
+import { makeErrorParameters } from './util.js';
 
 import { endianness } from 'node:os';
 
@@ -648,8 +649,8 @@ async function sendJSAppleEvent(
  * @param eventID - The event ID of the Apple event to handle.
  * @param handler - The handler function to call when an AppleEvent
  *  is received with the given event class and event ID.
- * The handler function must return a Record<AEKeyword, AEDescriptor>
- *  if a reply is expected, or null if a reply is not expected.
+ * The handler function should return an object of parameters if
+ *  a reply is expected, or null if a reply is not expected.
  */
 function handleJSAppleEvent(
     eventClass: AEJSBridgeNative.AEEventClass,
@@ -665,16 +666,35 @@ function handleJSAppleEvent(
             > | null
 ) {
     handleAppleEvent(eventClass, eventID, (event, replyExpected) => {
-        const jsResult = handler(
-            new AEJSEventDescriptor(event),
-            replyExpected
+        let jsResult: Record<
+            AEJSBridgeNative.AEKeyword,
+            AEJSDescriptor<AEJSBridgeNative.AEDescriptor>
+        > | null = null;
+        try {
+            jsResult = handler(
+                new AEJSEventDescriptor(event),
+                replyExpected
+            );
+        } catch (error) {
+            if (error instanceof Error) {
+                jsResult = makeErrorParameters(error.message);
+            } else jsResult = makeErrorParameters(
+                'JS handler threw an unknown error'
+            );
+        }
+        if (replyExpected && jsResult === null) {
+            jsResult = makeErrorParameters(
+                'JS handler returned null, but reply was expected'
+            );
+        }
+        return Object.fromEntries(
+            Object
+                .entries(jsResult ?? {})
+                .map(
+                    ([key, value]) =>
+                        [key, value.toNative()]
+                )
         );
-        return jsResult === null
-            ? null
-            : Object
-                .fromEntries(Object
-                    .entries(jsResult)
-                    .map(([key, value]) => [key, value.toNative()]));
     });
 }
 /**
