@@ -16,6 +16,67 @@ import {
 import { endianness } from 'node:os';
 
 /**
+ * A value that can be converted to a descriptor.
+ */
+type ConvertibleValue =
+    | string
+    | number
+    | boolean
+    | null
+    | AEJSDescriptor<AEJSBridgeNative.AEDescriptor>
+    | DataValueSpec
+    | ValueCoercionSpec;
+
+/**
+ * A specification for a data descriptor.
+ */
+type DataValueSpec = {
+    /**
+     * The type keyword to set on the descriptor.
+     */
+    type: AEJSBridgeNative.DescType,
+    /**
+     * The data of the descriptor.
+     */
+    data: Uint8Array,
+}
+
+function isDataValueSpec(value: unknown): value is DataValueSpec {
+    return (
+        typeof value === 'object'
+        && value !== null
+        && 'type' in value
+        && 'data' in value
+        && typeof value.type === 'string'
+        && value.data instanceof Uint8Array
+    );
+}
+
+/**
+ * A specification for a descriptor coercion from a coercible value.
+ */
+type ValueCoercionSpec = {
+    /**
+     * The initial value for the descriptor.
+     */
+    value: ConvertibleValue,
+    /**
+     * The type to coerce the descriptor to.
+     */
+    as: AEJSBridgeNative.DescType,
+}
+
+function isValueCoercionSpec(value: unknown): value is ValueCoercionSpec {
+    return (
+        typeof value === 'object'
+        && value !== null
+        && 'value' in value
+        && 'as' in value
+        && typeof value.as === 'string'
+    );
+}
+
+/**
  * A JavaScript wrapper for an Apple event descriptor.
  * @template T - The type of the descriptor.
  */
@@ -26,7 +87,7 @@ abstract class AEJSDescriptor<T extends AEJSBridgeNative.AEDescriptor> {
     protected nativeDescriptor: T;
 
     /**
-     * Creates a new JavaScript wrapper for an Apple event descriptor.
+     * Creates a new Apple event descriptor wrapper.
      * @param nativeDescriptor - The native descriptor.
      */
     protected constructor(nativeDescriptor: T) {
@@ -42,9 +103,25 @@ abstract class AEJSDescriptor<T extends AEJSBridgeNative.AEDescriptor> {
     }
 
     /**
-     * Creates a new JavaScript wrapper for an Apple event descriptor from a native descriptor.
+     * Casts the descriptor to the given type.
+     * @param descriptorType - The type of the descriptor to cast to.
+     * @returns The descriptor cast to the given type.
+     */
+    public as<T extends AEJSBridgeNative.AEDescriptor>(
+        descriptorType: AEJSBridgeNative.DescType
+    ): AEJSDescriptor<T> {
+        return AEJSDescriptor
+            .fromNative(
+                this
+                    .nativeDescriptor
+                    .as(descriptorType)
+            ) as AEJSDescriptor<T>;
+    }
+
+    /**
+     * Creates a new Apple event descriptor wrapper from a native descriptor.
      * @param nativeDescriptor - The native descriptor.
-     * @returns The JavaScript wrapper for the descriptor.
+     * @returns The Apple event descriptor wrapper.
      */
     static fromNative
         (native: AEJSBridgeNative.AENullDescriptor): AEJSNullDescriptor;
@@ -84,6 +161,17 @@ abstract class AEJSDescriptor<T extends AEJSBridgeNative.AEDescriptor> {
     }
 
     /**
+     * Creates a new Apple event descriptor wrapper from a string.
+     * @param string - The string to create the descriptor from.
+     * @returns The Apple event descriptor wrapper.
+     */
+    public static fromString(string: string): AEJSDataDescriptor {
+        return new AEJSDataDescriptor(
+            new AEDataDescriptor('utf8', new TextEncoder().encode(string))
+        );
+    }
+
+    /**
      * Gets the string value of the descriptor.
      * @returns The string value of the descriptor.
      */
@@ -91,6 +179,20 @@ abstract class AEJSDescriptor<T extends AEJSBridgeNative.AEDescriptor> {
         const asString: AEJSBridgeNative.AEDataDescriptor
             = this.nativeDescriptor.as('utf8');
         return new TextDecoder('utf-8').decode(asString.data);
+    }
+
+    /**
+     * Creates a new Apple event descriptor wrapper from a number.
+     * @param number - The number to create the descriptor from.
+     * @returns The Apple event descriptor wrapper.
+     */
+    public static fromNumber(number: number): AEJSDataDescriptor {
+        const dataView = new DataView(new ArrayBuffer(8));
+        dataView.setFloat64(0, number, endianness() === 'LE');
+        const uint8Array = new Uint8Array(dataView.buffer);
+        return new AEJSDataDescriptor(
+            new AEDataDescriptor('doub', uint8Array)
+        );
     }
 
     /**
@@ -104,6 +206,17 @@ abstract class AEJSDescriptor<T extends AEJSBridgeNative.AEDescriptor> {
             = this.nativeDescriptor.as('doub');
         return new DataView(asNumber.data.buffer)
             .getFloat64(0, endianness() === 'LE');
+    }
+
+    /**
+     * Creates a new Apple event descriptor wrapper from a boolean.
+     * @param boolean - The boolean to create the descriptor from.
+     * @returns The Apple event descriptor wrapper.
+     */
+    public static fromBoolean(boolean: boolean): AEJSDataDescriptor {
+        return new AEJSDataDescriptor(
+            new AEDataDescriptor('bool', new Uint8Array([boolean ? 1 : 0]))
+        );
     }
 
     /**
@@ -164,6 +277,107 @@ abstract class AEJSDescriptor<T extends AEJSBridgeNative.AEDescriptor> {
                 }
         }
         throw new TypeError('Invalid hint');
+    }
+
+    /**
+     * Creates a new Apple event descriptor wrapper from a value.
+     * @param value - The value to create the descriptor from.
+     * @param descriptorType - The type keyword to set on the descriptor.
+     *  If not provided, the type will be inferred from the value.
+     *  This is only applicable to list and record descriptors.
+     * @returns The Apple event descriptor wrapper.
+     */
+    public static fromValue<T extends ConvertibleValue>(
+        value: T
+    ): AEJSDescriptor<AEJSBridgeNative.AEDescriptor>;
+    public static fromValue<T extends ConvertibleValue>(
+        value: [T],
+        descriptorType?: AEJSBridgeNative.DescType
+    ): AEJSListDescriptor;
+    public static fromValue<T extends ConvertibleValue>(
+        value: Record<AEJSBridgeNative.AEKeyword, T>,
+        descriptorType?: AEJSBridgeNative.DescType
+    ): AEJSRecordDescriptor;
+    public static fromValue<T extends ConvertibleValue>(
+        value: T | [T] | Record<AEJSBridgeNative.AEKeyword, T>,
+        descriptorType?: AEJSBridgeNative.DescType
+    ):
+        | AEJSDescriptor<AEJSBridgeNative.AEDescriptor>
+        | AEJSListDescriptor
+        | AEJSRecordDescriptor;
+    public static fromValue(
+        value:
+            | ConvertibleValue
+            | [ConvertibleValue]
+            | Record<AEJSBridgeNative.AEKeyword, ConvertibleValue>,
+        descriptorType: AEJSBridgeNative.DescType | undefined = undefined
+    ): AEJSDescriptor<AEJSBridgeNative.AEDescriptor> {
+        // Handle special cases used for convenience
+        if (value instanceof AEJSDescriptor) {
+            return value;
+        }
+        if (isValueCoercionSpec(value)) {
+            return AEJSDescriptor.fromValue(value.value).as(value.as);
+        }
+        if (isDataValueSpec(value)) {
+            return new AEJSDataDescriptor(
+                new AEDataDescriptor(value.type, value.data)
+            );
+        }
+
+        // Handle primitive values
+        if (value === null) {
+            return new AEJSNullDescriptor();
+        }
+        if (typeof value === 'string') {
+            return AEJSDescriptor.fromString(value);
+        }
+        if (typeof value === 'number') {
+            return AEJSDescriptor.fromNumber(value);
+        }
+        if (typeof value === 'boolean') {
+            return AEJSDescriptor.fromBoolean(value);
+        }
+
+        // Handle array values
+        if (Array.isArray(value)) {
+            return new AEJSListDescriptor(
+                new AEListDescriptor(
+                    descriptorType ?? 'list',
+                    value.map(
+                        item =>
+                            AEJSDescriptor
+                                .fromValue(item)
+                                .toNative()
+                    )
+                )
+            );
+        }
+
+        // Handle record values
+        if (typeof value === 'object' && value !== null) {
+            return new AEJSRecordDescriptor(
+                new AERecordDescriptor(
+                    descriptorType ?? 'reco',
+                    Object
+                        .fromEntries(
+                            Object
+                                .entries(value)
+                                .map(
+                                    ([key, value]) =>
+                                        [
+                                            key,
+                                            AEJSDescriptor
+                                                .fromValue(value)
+                                                .toNative()
+                                        ]
+                                )
+                        )
+                )
+            );
+        }
+
+        throw new TypeError('Invalid value');
     }
 
     /**
