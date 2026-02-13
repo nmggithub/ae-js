@@ -677,7 +677,9 @@ function handleJSAppleEvent(
             );
         } catch (error) {
             if (error instanceof Error) {
-                jsResult = makeErrorParameters(error.message);
+                jsResult = makeErrorParameters(
+                    `JS handler threw a(n) ${error.name}: ${error.message}`
+                );
             } else jsResult = makeErrorParameters(
                 'JS handler threw an unknown error'
             );
