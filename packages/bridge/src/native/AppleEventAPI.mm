@@ -284,62 +284,66 @@ OSErr InvokeJSHandlerOnMainThreadOrThrow(const Napi::Env &env,
                                          const AppleEvent *event,
                                          AppleEvent *reply,
                                          Napi::Function handler) {
-  if (!event) {
-    Napi::Error::New(env, "Received null AppleEvent")
-        .ThrowAsJavaScriptException();
-    return paramErr;
-  }
-
-  auto wrappedEvent = CopyAndWrapAEDescOrThrow(env, event);
-
-  if (!wrappedEvent.IsObject() || !wrappedEvent.As<Napi::Object>().InstanceOf(
-                                      AEEventDescriptor::constructor.Value())) {
-    Napi::Error::New(env, "Failed to wrap incoming event")
-        .ThrowAsJavaScriptException();
-    return errAEEventNotHandled;
-  }
-
-  bool replyExpected = reply != nullptr;
-  auto result =
-      handler.Call({wrappedEvent, Napi::Boolean::New(env, replyExpected)});
-  if (replyExpected && result.IsEmpty()) {
-    Napi::Error::New(env,
-                     "Handler returned an empty result when reply was expected")
-        .ThrowAsJavaScriptException();
-    return errAEEventNotHandled;
-  }
-  if (!result.IsObject()) {
-    Napi::Error::New(env, "Handler returned a non-object result")
-        .ThrowAsJavaScriptException();
-    return errAEEventNotHandled;
-  }
-  Napi::Object resultObject = result.As<Napi::Object>();
-  Napi::Array keys = resultObject.GetPropertyNames();
-  for (uint32_t i = 0; i < keys.Length(); ++i) {
-    Napi::Value key = keys.Get(i);
-    if (!key.IsString()) {
-      Napi::Error::New(env, "Handler returned an object with a non-string key")
-          .ThrowAsJavaScriptException();
-      return errAEEventNotHandled;
+  auto failAsNotHandled = [&env]() -> OSErr {
+    if (env.IsExceptionPending()) {
+      // Clear pending JS exception so it does not bubble out of the native
+      // AppleEvent callback boundary and terminate the process.
+      env.GetAndClearPendingException();
     }
-    FourCharCode keyword =
-        StringToFourCharCodeOrThrow(env, key.As<Napi::String>());
-    Napi::Value value = resultObject.Get(key);
-    auto *wrapper =
-        UnwrapDescriptorOrThrow(env, value, "Reply values must be descriptors");
-    if (!wrapper) {
-      Napi::Error::New(env, "Reply values must be descriptors")
-          .ThrowAsJavaScriptException();
-      return errAEEventNotHandled;
+    return errAEEventNotHandled;
+  };
+
+  try {
+    if (!event) {
+      return failAsNotHandled();
     }
-    OSErr putErr = AEPutParamDesc(reply, keyword, wrapper->GetRawDescriptor());
-    if (putErr != noErr) {
-      Napi::Error::New(env, "AEPutParamDesc failed")
-          .ThrowAsJavaScriptException();
-      return putErr;
+
+    auto wrappedEvent = CopyAndWrapAEDescOrThrow(env, event);
+    if (!wrappedEvent.IsObject() ||
+        !wrappedEvent.As<Napi::Object>().InstanceOf(
+            AEEventDescriptor::constructor.Value())) {
+      return failAsNotHandled();
     }
+
+    bool replyExpected = reply != nullptr;
+    auto result =
+        handler.Call({wrappedEvent, Napi::Boolean::New(env, replyExpected)});
+    if (env.IsExceptionPending() || !result.IsObject()) {
+      return failAsNotHandled();
+    }
+
+    Napi::Object resultObject = result.As<Napi::Object>();
+    Napi::Array keys = resultObject.GetPropertyNames();
+    for (uint32_t i = 0; i < keys.Length(); ++i) {
+      Napi::Value key = keys.Get(i);
+      if (!key.IsString()) {
+        return failAsNotHandled();
+      }
+      FourCharCode keyword =
+          StringToFourCharCodeOrThrow(env, key.As<Napi::String>());
+      Napi::Value value = resultObject.Get(key);
+      // The function expects a string error message, so we pass one even
+      //    though we'll actually end up swallowing any JS exception that
+      //    it throws (since we're not on a JS path here).
+      auto *wrapper = UnwrapDescriptorOrThrow(
+          env, value, "Reply values must be descriptors");
+      if (!wrapper) {
+        return failAsNotHandled();
+      }
+      OSErr putErr =
+          AEPutParamDesc(reply, keyword, wrapper->GetRawDescriptor());
+      if (putErr != noErr) {
+        return putErr;
+      }
+    }
+    return noErr;
+  } catch (const Napi::Error &) {
+    return failAsNotHandled();
+  } catch (const std::exception &) {
+    return failAsNotHandled();
+  } catch (...) {
+    return failAsNotHandled();
   }
-  return noErr;
 }
 
 static OSErr AppleEventHandlerThunk(const AppleEvent *event, AppleEvent *reply,
