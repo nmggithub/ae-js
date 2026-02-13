@@ -14,7 +14,10 @@
     },
     "license": "MIT",
     "imports": {
-        "#ae_js_bridge_native": "./build/Release/ae_js_bridge_native.node"
+        "#ae_js_bridge_native": {
+            "types": "./types/native/ae_js_bridge_native.d.ts",
+            "default": "./build/Release/ae_js_bridge_native.node"
+        }
     },
     "exports": {
         ".": {
