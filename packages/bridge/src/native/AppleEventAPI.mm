@@ -305,7 +305,7 @@ OSErr InvokeJSHandlerOnMainThreadOrThrow(const Napi::Env &env,
       return failAsNotHandled();
     }
 
-    bool replyExpected = reply != nullptr;
+    bool replyExpected = reply->descriptorType != typeNull;
     auto result =
         handler.Call({wrappedEvent, Napi::Boolean::New(env, replyExpected)});
     if (env.IsExceptionPending() || !result.IsObject()) {
