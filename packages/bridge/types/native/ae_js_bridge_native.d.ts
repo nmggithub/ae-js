@@ -188,9 +188,9 @@ declare module '#ae_js_bridge_native' {
     }
 
     /**
-     * Sends an AppleEvent and returns a promise that resolves to the reply.
+     * Sends an Apple event and returns a promise that resolves to the reply.
      * @param event - The event to send.
-     * @param expectReply - Whether to expect a reply from the AppleEvent.
+     * @param expectReply - Whether to expect a reply from the Apple event.
      * @returns A promise that resolves to the reply event, or
      *  null if no reply is expected.
      */
@@ -208,9 +208,9 @@ declare module '#ae_js_bridge_native' {
     ): Promise<AEEventDescriptor | null>;
 
     /**
-     * Installs an AppleEvent handler for the given event class and event ID.
-     * @param eventClass - The event class of the AppleEvent to handle.
-     * @param eventID - The event ID of the AppleEvent to handle.
+     * Installs an Apple event handler for the given event class and event ID.
+     * @param eventClass - The event class of the Apple event to handle.
+     * @param eventID - The event ID of the Apple event to handle.
      * @param handler - The handler function to call when an AppleEvent
      *  is received with the given event class and event ID.
      * The handler function must return a Record<AEKeyword, AEDescriptor>
@@ -224,10 +224,10 @@ declare module '#ae_js_bridge_native' {
     ): void;
 
     /**
-     * Deregisters an AppleEvent handler for the given event class and event ID.
+     * Deregisters an Apple event handler for the given event class and event ID.
      * If no handler is registered for the pair, this is a no-op.
-     * @param eventClass - The event class of the AppleEvent handler.
-     * @param eventID - The event ID of the AppleEvent handler.
+     * @param eventClass - The event class of the Apple event handler.
+     * @param eventID - The event ID of the Apple event handler.
      */
     export function unhandleAppleEvent(
         eventClass: AEEventClass,

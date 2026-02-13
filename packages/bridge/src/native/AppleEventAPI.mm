@@ -48,7 +48,7 @@ public:
   void Execute() override {
     if (!requestDesc) {
       errorCode = paramErr;
-      errorMessage = "Missing AppleEvent request descriptor";
+      errorMessage = "Missing Apple event request descriptor";
       SetError(errorMessage);
       return;
     }
@@ -85,7 +85,7 @@ public:
     }
     if (wrapped.IsUndefined() || wrapped.IsNull()) {
       deferred.Reject(
-          Napi::Error::New(env, "Failed to wrap AppleEvent reply").Value());
+          Napi::Error::New(env, "Failed to wrap Apple event reply").Value());
       return;
     }
     deferred.Resolve(wrapped);
