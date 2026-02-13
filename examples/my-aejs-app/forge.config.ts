@@ -3,7 +3,7 @@ import { FuseV1Options, FuseVersion } from '@electron/fuses';
 
 import type { ForgeConfig } from '@electron-forge/shared-types';
 
-import { Dictionary, Suite, Command } from '@ae-js/sdef/elements';
+import { Dictionary, Suite, Event, DirectParameter } from '@ae-js/sdef/elements';
 
 import AEJSForgePlugin from '@ae-js/forge-plugin';
 
@@ -17,11 +17,33 @@ const scriptingDefinition = new Dictionary(
                     code: 'AEJS',
                 },
                 {
-                    commands: [
-                        new Command(
+                    // It's not documented, but using `events` here instead of `commands`
+                    //  keeps Cocoa scripting from stepping on our toes and registering
+                    //  its own event handlers for the same event IDs. More to come.
+                    events: [
+                        new Event(
                             {
                                 name: 'doThing',
                                 code: 'aejsDOTH',
+                            },
+                            {} // No children
+                        ),
+                        new Event(
+                            {
+                                name: 'doPing',
+                                code: 'aejsPING',
+                            },
+                            {
+                                directParameter: new DirectParameter(
+                                    { type: 'text' },
+                                    {} // No children
+                                ),
+                            }
+                        ),
+                        new Event(
+                            {
+                                name: 'doError',
+                                code: 'aejs ERR',
                             },
                             {} // No children
                         ),

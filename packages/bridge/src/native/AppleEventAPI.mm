@@ -284,6 +284,11 @@ OSErr InvokeJSHandlerOnMainThreadOrThrow(const Napi::Env &env,
                                          const AppleEvent *event,
                                          AppleEvent *reply,
                                          Napi::Function handler) {
+  // TODO: We actually shouldn't be doing this. It defers to any other handlers
+  //    and ultimately leads to Cocoa scripting initializing, which may step on
+  //    our toes and register its own event handlers for the same event IDs.
+  //    If we use `events` instead of `commands` in the scripting definition,
+  //    that mitigates that behavior, but we should still be careful.
   auto failAsNotHandled = [&env]() -> OSErr {
     if (env.IsExceptionPending()) {
       // Clear pending JS exception so it does not bubble out of the native

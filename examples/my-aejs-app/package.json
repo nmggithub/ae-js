@@ -10,7 +10,7 @@
         "start": "electron-forge start",
         "pack-tarballs": "npm --prefix ../../ pack --workspaces",
         "postpack-tarballs": "rm -rf node_modules package-lock.json",
-        "prepackage": "npm run build",
+        "prepackage": "npm run build && npm run build-forge",
         "package": "electron-forge package",
         "make": "electron-forge make",
         "publish": "electron-forge publish",

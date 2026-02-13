@@ -1,7 +1,16 @@
 import { app, BrowserWindow } from 'electron';
 import path from 'node:path';
 
-import { handleJSAppleEvent, unhandleJSAppleEvent } from '@ae-js/bridge';
+import {
+    handleJSAppleEvent,
+    unhandleJSAppleEvent,
+    AEJSDataDescriptor,
+    AEJSNullDescriptor
+} from '@ae-js/bridge';
+
+import {
+    AEDataDescriptor
+} from '@ae-js/bridge/native';
 
 handleJSAppleEvent(
     'aejs',
@@ -14,6 +23,71 @@ handleJSAppleEvent(
         if (replyExpected) {
             return {};
         } else return null;
+    }
+);
+
+handleJSAppleEvent(
+    'aejs',
+    'PING',
+    (event, replyExpected) => {
+        console.log('Received PING event:', event);
+        let incomingDirectParameter = '----' in event.parameters
+            && !(event.parameters['----'] instanceof AEJSNullDescriptor)
+            ? event.parameters['----']
+            : null;
+        console.log(event.parameters);
+        if (replyExpected) {
+            const parsedIncomingDirectParameter: string = (() => {
+                if (incomingDirectParameter) {
+                    console.log('incomingDirectParameter:', incomingDirectParameter);
+                    console.log('incomingDirectParameter type:', incomingDirectParameter.descriptorType);
+                    try {
+                        return incomingDirectParameter?.toString()
+                            ?? "Could not parse incoming direct parameter";
+                    } catch (error) {
+                        console.error('Error parsing incoming direct parameter:', error);
+                    }
+                }
+                return "No direct parameter";
+            })();
+            return {
+                '----': new AEJSDataDescriptor(
+                    new AEDataDescriptor(
+                        'utf8',
+                        new TextEncoder().encode(`Pong! ${parsedIncomingDirectParameter}`)
+                    )
+                )
+            };
+        }
+        return null;
+    }
+);
+
+handleJSAppleEvent(
+    'aejs',
+    ' ERR',
+    (event, replyExpected) => {
+        // throw new Error('test');
+        // return null;
+        const errorNumber = -1708;
+        // create a data view of a 32-bit integer
+        const dataView = new DataView(new ArrayBuffer(4));
+        dataView.setInt32(0, errorNumber, true);
+        const uint8Array = new Uint8Array(dataView.buffer);
+        return {
+            'errn': new AEJSDataDescriptor(
+                new AEDataDescriptor(
+                    'long',
+                    uint8Array
+                )
+            ),
+            'errs': new AEJSDataDescriptor(
+                new AEDataDescriptor(
+                    'utf8',
+                    new TextEncoder().encode('test')
+                )
+            )
+        }
     }
 );
 
