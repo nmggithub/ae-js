@@ -26,7 +26,7 @@ class AEListDescriptor;
 class AERecordDescriptor;
 class AEEventDescriptor;
 class AEUnknownDescriptor;
-Napi::Object WrapAEDesc(Napi::Env env, AEDesc *desc);
+Napi::Value CopyAndWrapAEDescOrThrow(Napi::Env env, const AEDesc *desc);
 
 template <typename Derived>
 class AEDescriptorWrapper : public Napi::ObjectWrap<Derived> {

@@ -157,24 +157,31 @@ UnwrapDescriptorOrThrow(const Napi::Env &env, const Napi::Value &value,
   return wrapper;
 }
 
-Napi::Object WrapAEDesc(Napi::Env env, AEDesc *desc) {
-  DescriptorKind kind = GetDescriptorKind(desc);
+Napi::Value CopyAndWrapAEDescOrThrow(Napi::Env env, const AEDesc *desc) {
+  AEDesc *copyDesc = new AEDesc;
+  OSErr err = AEDuplicateDesc(desc, copyDesc);
+  if (err != noErr) {
+    delete copyDesc;
+    OSError::Throw(env, err, "AEDuplicateDesc failed");
+    return env.Undefined();
+  }
+  DescriptorKind kind = GetDescriptorKind(copyDesc);
   switch (kind) {
   case DescriptorKind::Null:
-    return AENullDescriptor::WrapAEDesc(env, desc);
+    return AENullDescriptor::WrapAEDesc(env, copyDesc);
   case DescriptorKind::Data:
-    return AEDataDescriptor::WrapAEDesc(env, desc);
+    return AEDataDescriptor::WrapAEDesc(env, copyDesc);
   case DescriptorKind::List:
-    return AEListDescriptor::WrapAEDesc(env, desc);
+    return AEListDescriptor::WrapAEDesc(env, copyDesc);
   case DescriptorKind::Record:
-    return AERecordDescriptor::WrapAEDesc(env, desc);
+    return AERecordDescriptor::WrapAEDesc(env, copyDesc);
   case DescriptorKind::Event:
-    return AEEventDescriptor::WrapAEDesc(env, desc);
+    return AEEventDescriptor::WrapAEDesc(env, copyDesc);
   case DescriptorKind::Unknown:
-    return AEUnknownDescriptor::WrapAEDesc(env, desc);
+    return AEUnknownDescriptor::WrapAEDesc(env, copyDesc);
   }
 
-  return AEUnknownDescriptor::WrapAEDesc(env, desc);
+  return AEUnknownDescriptor::WrapAEDesc(env, copyDesc);
 }
 
 void AEDescriptor::InitFromJS(const Napi::CallbackInfo &info) {

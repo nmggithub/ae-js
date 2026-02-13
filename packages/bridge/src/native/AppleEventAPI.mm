@@ -77,8 +77,18 @@ public:
     }
 
     AEDesc *result = replyDesc;
-    replyDesc = nullptr; // transferred to wrapper ownership
-    deferred.Resolve(WrapAEDesc(env, result));
+    Napi::Value wrapped = CopyAndWrapAEDescOrThrow(env, result);
+    if (env.IsExceptionPending()) {
+      Napi::Error error = env.GetAndClearPendingException();
+      deferred.Reject(error.Value());
+      return;
+    }
+    if (wrapped.IsUndefined() || wrapped.IsNull()) {
+      deferred.Reject(
+          Napi::Error::New(env, "Failed to wrap AppleEvent reply").Value());
+      return;
+    }
+    deferred.Resolve(wrapped);
   }
 
   void OnError(const Napi::Error &) override {
@@ -280,18 +290,15 @@ OSErr InvokeJSHandlerOnMainThreadOrThrow(const Napi::Env &env,
     return paramErr;
   }
 
-  // The AppleEvent manager owns `event`; duplicate it so the JS wrapper can
-  // safely dispose its own copy when GC runs.
-  AEDesc *eventCopy = new AEDesc{};
-  OSErr duplicateErr =
-      AEDuplicateDesc(reinterpret_cast<const AEDesc *>(event), eventCopy);
-  if (duplicateErr != noErr) {
-    delete eventCopy;
-    OSError::Throw(env, duplicateErr, "AEDuplicateDesc(event) failed");
-    return duplicateErr;
+  auto wrappedEvent = CopyAndWrapAEDescOrThrow(env, event);
+
+  if (!wrappedEvent.IsObject() || !wrappedEvent.As<Napi::Object>().InstanceOf(
+                                      AEEventDescriptor::constructor.Value())) {
+    Napi::Error::New(env, "Failed to wrap incoming event")
+        .ThrowAsJavaScriptException();
+    return errAEEventNotHandled;
   }
 
-  auto wrappedEvent = AEDescriptor::WrapAEDesc(env, eventCopy);
   bool replyExpected = reply != nullptr;
   auto result =
       handler.Call({wrappedEvent, Napi::Boolean::New(env, replyExpected)});
