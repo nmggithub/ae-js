@@ -1,0 +1,34 @@
+{
+    "name": "@ae-js/forge-plugin",
+    "description": "An Electron Forge plugin for use with the @ae-js/* packages.",
+    "type": "module",
+    "version": "0.1.0",
+    "repository": "github:nmggithub/ae-js",
+    "author": {
+        "name": "Noah Gregory",
+        "email": "noah@wts.dev",
+        "url": "https://wts.dev"
+    },
+    "license": "MIT",
+    "exports": {
+        ".": {
+            "types": "./dist/plugin.d.ts",
+            "default": "./dist/plugin.js"
+        }
+    },
+    "scripts": {
+        "build": "tsc",
+        "clean": "rm -rf ./dist"
+    },
+    "files": [
+        "dist/"
+    ],
+    "dependencies": {
+        "@ae-js/sdef": "^0.1.0",
+        "@electron-forge/plugin-base": "^7.11.1"
+    },
+    "devDependencies": {
+        "@types/node": "^25.2.3",
+        "typescript": "^5.9.3"
+    }
+}

@@ -1,0 +1,17 @@
+{
+    "compilerOptions": {
+        "module": "NodeNext",
+        "moduleResolution": "nodenext",
+        "strict": true,
+        "skipLibCheck": true,
+        "rootDir": "./src",
+        "outDir": "./dist",
+    },
+    "include": [
+        "./src/**/*.ts",
+    ],
+    "exclude": [
+        "./node_modules",
+        "./dist",
+    ]
+}

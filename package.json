@@ -1,0 +1,15 @@
+{
+    "name": "@ae-js/monorepo",
+    "description": "A monorepo for the @ae-js/* packages.",
+    "author": {
+        "name": "Noah Gregory",
+        "email": "noah@wts.dev",
+        "url": "https://wts.dev"
+    },
+    "license": "MIT",
+    "private": true,
+    "scripts": {},
+    "workspaces": [
+        "packages/*"
+    ]
+}

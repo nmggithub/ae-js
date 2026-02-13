@@ -1,0 +1,53 @@
+{
+    "name": "@ae-js/bridge",
+    "description": "A JavaScript wrapper for the Apple events API.",
+    "type": "module",
+    "version": "0.1.0",
+    "os": [
+        "darwin"
+    ],
+    "repository": "github:nmggithub/ae-js",
+    "author": {
+        "name": "Noah Gregory",
+        "email": "noah@wts.dev",
+        "url": "https://wts.dev"
+    },
+    "license": "MIT",
+    "imports": {
+        "#ae_js_bridge_native": "./build/Release/ae_js_bridge_native.node"
+    },
+    "exports": {
+        ".": {
+            "types": "./dist/index.d.ts",
+            "default": "./dist/index.js"
+        },
+        "./native": {
+            "types": "./dist/native.d.ts",
+            "default": "./dist/native.js"
+        }
+    },
+    "files": [
+        "dist/",
+        "build/Release/ae_js_bridge_native.node",
+        "types/native/ae_js_bridge_native.d.ts"
+    ],
+    "scripts": {
+        "build-native": "node-gyp build",
+        "build-scripts": "tsc --project scripts/tsconfig.json",
+        "build-source": "tsc --project src/ts/tsconfig.json",
+        "prebuild": "node-gyp clean && node-gyp configure",
+        "build": "npm run build-native && npm run build-source",
+        "pretest": "npm run build",
+        "test-native": "node ./scripts/test-native-code.js",
+        "test-js": "node ./scripts/test-js-code.js",
+        "test": "npm run test-native && npm run test-js",
+        "make-clangd-config": "node ./scripts/make-clangd-config.js"
+    },
+    "devDependencies": {
+        "@types/node": "^25.2.3",
+        "typescript": "^5.9.3",
+        "node-addon-api": "^8.5.0",
+        "node-gyp": "^11.4.2"
+    },
+    "gypfile": true
+}

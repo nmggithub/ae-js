@@ -1,0 +1,16 @@
+{
+    "compilerOptions": {
+        "module": "NodeNext",
+        "moduleResolution": "nodenext",
+        "strict": true,
+        "skipLibCheck": true,
+        "outDir": "./"
+    },
+    "include": [
+        "./forge.config.ts"
+    ],
+    "exclude": [
+        "./node_modules",
+        "./dist"
+    ]
+}

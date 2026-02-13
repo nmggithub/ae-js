@@ -1,0 +1,41 @@
+{
+  "name": "@ae-js/sdef",
+  "description": "A JavaScript library for building .sdef files.",
+  "type": "module",
+  "version": "0.1.0",
+  "repository": "github:nmggithub/ae-js",
+  "author": {
+    "name": "Noah Gregory",
+    "email": "noah@wts.dev",
+    "url": "https://wts.dev"
+  },
+  "license": "MIT",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./elements": {
+      "types": "./dist/elements.d.ts",
+      "default": "./dist/elements.js"
+    }
+  },
+  "scripts": {
+    "build-scripts": "tsc --project scripts/tsconfig.json",
+    "build-source": "tsc --project src/tsconfig.json",
+    "build": "npm run build-source && npm run build-scripts",
+    "clean": "rm -rf ./dist && rm -rf ./scripts/*.js",
+    "pretest": "npm run build",
+    "test": "node ./scripts/test.js"
+  },
+  "files": [
+    "dist/"
+  ],
+  "dependencies": {
+    "xmlbuilder2": "^4.0.3"
+  },
+  "devDependencies": {
+    "@types/node": "^25.2.3",
+    "typescript": "^5.9.3"
+  }
+}

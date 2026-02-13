@@ -1,0 +1,43 @@
+{
+    "name": "my-aejs-app",
+    "productName": "my-aejs-app",
+    "version": "1.0.0",
+    "description": "A test Electron application for the @ae-js/* packages.",
+    "main": "dist/index.js",
+    "scripts": {
+        "build": "tsc",
+        "build-forge": "tsc --project forge.tsconfig.json",
+        "start": "electron-forge start",
+        "pack-tarballs": "npm --prefix ../../ pack --workspaces",
+        "package": "electron-forge package",
+        "make": "electron-forge make",
+        "publish": "electron-forge publish",
+        "clean": "rm -rf dist out app_out app_err ae-js-*.tgz"
+    },
+    "author": {
+        "name": "Noah Gregory",
+        "email": "noah@wts.dev",
+        "url": "https://wts.dev"
+    },
+    "license": "MIT",
+    "private": true,
+    "dependencies": {
+        "electron-squirrel-startup": "^1.0.1",
+        "@ae-js/bridge": "file:ae-js-bridge-0.1.0.tgz"
+    },
+    "devDependencies": {
+        "@ae-js/forge-plugin": "file:ae-js-forge-plugin-0.1.0.tgz",
+        "@ae-js/sdef": "file:ae-js-sdef-0.1.0.tgz",
+        "@electron-forge/cli": "^7.11.1",
+        "@electron-forge/maker-deb": "^7.11.1",
+        "@electron-forge/maker-rpm": "^7.11.1",
+        "@electron-forge/maker-squirrel": "^7.11.1",
+        "@electron-forge/maker-zip": "^7.11.1",
+        "@electron-forge/plugin-auto-unpack-natives": "^7.11.1",
+        "@electron-forge/plugin-fuses": "^7.11.1",
+        "@electron/fuses": "^1.8.0",
+        "@types/node": "^25.2.3",
+        "electron": "40.3.0",
+        "typescript": "^5.9.3"
+    }
+}
