@@ -7,6 +7,10 @@ import { Dictionary, Suite, Event, DirectParameter } from '@ae-js/sdef/elements'
 
 import AEJSForgePlugin from '@ae-js/forge-plugin';
 
+import { basename, extname } from 'node:path';
+
+import { env } from 'node:process';
+
 const scriptingDefinition = new Dictionary(
     { title: 'My AEJS Dictionary' },
     {
@@ -55,6 +59,16 @@ const scriptingDefinition = new Dictionary(
 export default <ForgeConfig>{
     packagerConfig: {
         asar: true,
+        // Apps *must* be signed to be able to use Apple events.
+        osxSign: {
+            identity: env.CODE_SIGN_IDENTITY,
+            ignore(path) {
+                if (extname(basename(path)) === '.pak') {
+                    return true;
+                }
+                return false;
+            }
+        }
     },
     rebuildConfig: {},
     makers: [

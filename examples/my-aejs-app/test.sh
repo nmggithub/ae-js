@@ -8,24 +8,11 @@ rm -f app_out app_err
 npm run clean
 rm -rf node_modules package-lock.json
 
-# build the dependencies
-npm --prefix ../../ run build --workspaces
-
-# Pack the tarballs
-npm run pack-tarballs
-
-# Install the tarballs
-npm install
-
-# Build the app
-npm run build
+# Pack the dependencies
+npm run pack:deps
 
 # Package the app
 npm run package
-
-# Sign the app
-codesign --force --deep --sign "$CODE_SIGN_IDENTITY" \
-    ./out/my-aejs-app-darwin-arm64/my-aejs-app.app
 
 # Run the app
 open ./out/my-aejs-app-darwin-arm64/my-aejs-app.app \

@@ -12,7 +12,6 @@
         "build:app": "tsc",
         "build:forge-config": "tsc --project forge.tsconfig.json",
         "start": "electron-forge start",
-        "prebuild": "npm run pack:deps",
         "build": "npm run build:app && npm run build:forge-config",
         "prepackage": "npm run build",
         "package": "electron-forge package",
@@ -28,8 +27,8 @@
     "license": "MIT",
     "private": true,
     "dependencies": {
-        "electron-squirrel-startup": "^1.0.1",
-        "@ae-js/bridge": "file:ae-js-bridge-0.1.0.tgz"
+        "@ae-js/bridge": "file:ae-js-bridge-0.1.0.tgz",
+        "electron-squirrel-startup": "^1.0.1"
     },
     "devDependencies": {
         "@ae-js/forge-plugin": "file:ae-js-forge-plugin-0.1.0.tgz",
