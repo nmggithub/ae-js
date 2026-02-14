@@ -4,6 +4,8 @@
 #include "OSError.h"
 
 #include <CoreServices/CoreServices.h>
+#include <MacTypes.h>
+#include <OSAKit/OSAKit.h>
 #include <napi.h>
 
 #include <algorithm>
@@ -483,11 +485,69 @@ OSErr InvokeJSHandlerOnMainThreadOrThrow(const Napi::Env &env,
   }
 }
 
+static OSErr MakeErrorReply(AppleEvent *reply, OSErr errorCode,
+                            const std::string &errorMessage) {
+  AEDesc *errorNumberDesc = new AEDesc;
+  OSErr errorNumCreateErr = AECreateDesc(kOSAErrorNumber, &errorCode,
+                                         sizeof(errorCode), errorNumberDesc);
+  if (errorNumCreateErr != noErr) {
+    return errorNumCreateErr;
+  }
+  AEDesc *errorMessageDesc = new AEDesc;
+  OSErr errorMessageCreateErr =
+      AECreateDesc(kOSAErrorMessage, errorMessage.c_str(), errorMessage.size(),
+                   errorMessageDesc);
+  if (errorMessageCreateErr != noErr) {
+    return errorMessageCreateErr;
+  }
+  OSErr putErr = AEPutParamDesc(reply, kOSAErrorNumber, errorNumberDesc);
+  if (putErr != noErr) {
+    return putErr;
+  }
+  putErr = AEPutParamDesc(reply, kOSAErrorMessage, errorMessageDesc);
+  if (putErr != noErr) {
+    return putErr;
+  }
+  return noErr;
+}
+
+static bool
+GetAppleEventTimeoutDuration(const AppleEvent *event,
+                             std::chrono::milliseconds *outDuration) {
+  if (!event || !outDuration) {
+    return false;
+  }
+
+  SInt32 timeoutTicks = kAEDefaultTimeout;
+  OSErr timeoutErr =
+      AEGetAttributePtr(event, keyTimeoutAttr, typeSInt32, nullptr,
+                        &timeoutTicks, sizeof(timeoutTicks), nullptr);
+  if (timeoutErr != noErr && timeoutErr != errAEDescNotFound) {
+    return false;
+  }
+
+  if (timeoutTicks == kNoTimeOut || timeoutTicks == kAEDefaultTimeout ||
+      timeoutTicks <= 0) {
+    return false;
+  }
+
+  // Apple event timeout is expressed in ticks (1/60s).
+  *outDuration = std::chrono::milliseconds(
+      (static_cast<int64_t>(timeoutTicks) * 1000 + 59) / 60);
+  return true;
+}
+
+// The main thread handler thunk.
+// WARNING: We shouldn't return `errAEEventNotHandled` here, as it will defer to
+//    the Cocoa scripting event handler, which may step on our toes and register
+//    its own event handlers for the same event IDs. If we use `events` instead
+//    of `commands` in the scripting definition, that mitigates that behavior,
+//    but we should still be careful. We send error replies instead.
 static OSErr AppleEventHandlerThunk(const AppleEvent *event, AppleEvent *reply,
                                     SRefCon refCon) {
   HandlerContext *ctx = reinterpret_cast<HandlerContext *>(refCon);
   if (!ctx) {
-    return errAEEventNotHandled;
+    return MakeErrorReply(reply, paramErr, "Missing handler context");
   }
   gActiveHandlerCallbacks.fetch_add(1, std::memory_order_acq_rel);
   auto finish = []() {
@@ -506,24 +566,60 @@ static OSErr AppleEventHandlerThunk(const AppleEvent *event, AppleEvent *reply,
   struct CallData {
     std::mutex mtx;
     std::condition_variable cv;
+    bool started = false;
     bool done = false;
+    bool cancelled = false;
     OSErr result = noErr;
   };
-  CallData data;
-  ctx->handlerTsfn.BlockingCall([event, reply, &data](Napi::Env env,
-                                                      Napi::Function handler) {
-    OSErr err = InvokeJSHandlerOnMainThreadOrThrow(env, event, reply, handler);
-    std::lock_guard<std::mutex> lock(data.mtx);
-    data.result = err;
-    data.done = true;
-    data.cv.notify_all();
-  });
+  auto data = std::make_shared<CallData>();
+  napi_status status = ctx->handlerTsfn.BlockingCall(
+      [event, reply, data](Napi::Env env, Napi::Function handler) {
+        {
+          std::lock_guard<std::mutex> lock(data->mtx);
+          data->started = true;
+          if (data->cancelled) {
+            data->done = true;
+            data->cv.notify_all();
+            return;
+          }
+        }
 
-  {
-    std::unique_lock<std::mutex> lock(data.mtx);
-    data.cv.wait(lock, [&] { return data.done; });
+        OSErr err =
+            InvokeJSHandlerOnMainThreadOrThrow(env, event, reply, handler);
+        std::lock_guard<std::mutex> lock(data->mtx);
+        data->result = err;
+        data->done = true;
+        data->cv.notify_all();
+      });
+  if (status != napi_ok) {
+    finish();
+    return MakeErrorReply(reply, status, "Failed to block main thread");
   }
-  OSErr result = data.result;
+
+  std::chrono::milliseconds timeoutDuration{};
+  bool hasTimeout = GetAppleEventTimeoutDuration(event, &timeoutDuration);
+  if (hasTimeout) {
+    std::unique_lock<std::mutex> lock(data->mtx);
+    bool completedInTime =
+        data->cv.wait_for(lock, timeoutDuration, [&] { return data->done; });
+    if (!completedInTime) {
+      // If callback hasn't started yet, cancel queued execution and return a
+      // timeout reply. If it already started, we must continue waiting because
+      // the callback may still be writing into the live reply event.
+      if (!data->started) {
+        data->cancelled = true;
+        finish();
+        return MakeErrorReply(
+            reply, errAETimeout,
+            "Apple event handler timed out on the receiving end");
+      }
+      data->cv.wait(lock, [&] { return data->done; });
+    }
+  } else {
+    std::unique_lock<std::mutex> lock(data->mtx);
+    data->cv.wait(lock, [&] { return data->done; });
+  }
+  OSErr result = data->result;
   finish();
   return result;
 }
