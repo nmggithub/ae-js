@@ -147,6 +147,10 @@ Napi::Value SendAppleEvent(const Napi::CallbackInfo &info) {
 namespace Handling {
 #define POISONED_ENV_ERROR_MESSAGE                                             \
   "Apple event bridge is unavailable for this environment"
+#define UNHANDLE_DURING_CALLBACK_ERROR_MESSAGE                                 \
+  "Cannot unhandle Apple events while any Apple event callback is in "         \
+  "progress. "                                                                 \
+  "Defer unhandle (e.g. setTimeout) and retry."
 struct HandlerKey {
   AEEventClass eventClass = 0;
   AEEventID eventID = 0;
@@ -200,6 +204,7 @@ std::mutex gAEJSHandlersMutex;
 std::unordered_map<HandlerKey, std::unique_ptr<HandlerContext>,
                    HandlerKeyHasher>
     gAEJSHandlers;
+std::atomic<uint32_t> gActiveHandlerCallbacks{0};
 
 std::mutex gAEEventHandlerUPPsByEnvMutex;
 std::unordered_map<napi_env, AEEventHandlerUPP> gAEEventHandlerUPPsByEnv;
@@ -484,11 +489,18 @@ static OSErr AppleEventHandlerThunk(const AppleEvent *event, AppleEvent *reply,
   if (!ctx) {
     return errAEEventNotHandled;
   }
+  gActiveHandlerCallbacks.fetch_add(1, std::memory_order_acq_rel);
+  auto finish = []() {
+    gActiveHandlerCallbacks.fetch_sub(1, std::memory_order_acq_rel);
+  };
   // fast path if we're on the right thread
   if (ctx->jsThreadId == std::this_thread::get_id()) {
     Napi::HandleScope scope(ctx->env);
     Napi::Function handler = ctx->handlerRef.Value();
-    return InvokeJSHandlerOnMainThreadOrThrow(ctx->env, event, reply, handler);
+    OSErr result =
+        InvokeJSHandlerOnMainThreadOrThrow(ctx->env, event, reply, handler);
+    finish();
+    return result;
   }
   // otherwise, block the main thread and call the handler
   struct CallData {
@@ -511,7 +523,9 @@ static OSErr AppleEventHandlerThunk(const AppleEvent *event, AppleEvent *reply,
     std::unique_lock<std::mutex> lock(data.mtx);
     data.cv.wait(lock, [&] { return data.done; });
   }
-  return data.result;
+  OSErr result = data.result;
+  finish();
+  return result;
 }
 
 Napi::Value UnhandleAppleEvent(const Napi::CallbackInfo &info) {
@@ -530,6 +544,12 @@ Napi::Value UnhandleAppleEvent(const Napi::CallbackInfo &info) {
 
   if (IsEnvPoisoned(env)) {
     Napi::Error::New(env, POISONED_ENV_ERROR_MESSAGE)
+        .ThrowAsJavaScriptException();
+    return env.Undefined();
+  }
+
+  if (gActiveHandlerCallbacks.load(std::memory_order_acquire) != 0) {
+    Napi::Error::New(env, UNHANDLE_DURING_CALLBACK_ERROR_MESSAGE)
         .ThrowAsJavaScriptException();
     return env.Undefined();
   }
