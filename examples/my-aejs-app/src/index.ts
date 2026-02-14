@@ -67,27 +67,7 @@ handleJSAppleEvent(
     'aejs',
     ' ERR',
     (event, replyExpected) => {
-        throw new Error('test');
-        // return null;
-        // const errorNumber = -1708;
-        // // create a data view of a 32-bit integer
-        // const dataView = new DataView(new ArrayBuffer(4));
-        // dataView.setInt32(0, errorNumber, true);
-        // const uint8Array = new Uint8Array(dataView.buffer);
-        // return {
-        //     'errn': new AEJSDataDescriptor(
-        //         new AEDataDescriptor(
-        //             'long',
-        //             uint8Array
-        //         )
-        //     ),
-        //     'errs': new AEJSDataDescriptor(
-        //         new AEDataDescriptor(
-        //             'utf8',
-        //             new TextEncoder().encode('test')
-        //         )
-        //     )
-        // }
+        throw new Error('What did you expect?');
     }
 );
 
