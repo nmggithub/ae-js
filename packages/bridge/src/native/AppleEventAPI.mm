@@ -145,6 +145,8 @@ Napi::Value SendAppleEvent(const Napi::CallbackInfo &info) {
 }
 } // namespace Sending
 namespace Handling {
+#define POISONED_ENV_ERROR_MESSAGE                                             \
+  "Apple event bridge is unavailable for this environment"
 struct HandlerKey {
   AEEventClass eventClass = 0;
   AEEventID eventID = 0;
@@ -194,26 +196,139 @@ struct HandlerContext {
   Napi::ThreadSafeFunction handlerTsfn;
 };
 
-std::mutex gRegistryMutex;
+std::mutex gAEJSHandlersMutex;
 std::unordered_map<HandlerKey, std::unique_ptr<HandlerContext>,
                    HandlerKeyHasher>
-    gHandlers;
+    gAEJSHandlers;
 
-std::mutex gAEHandlersByEnvMutex;
-std::unordered_map<napi_env, AEEventHandlerUPP> gAEHandlersByEnv;
+std::mutex gAEEventHandlerUPPsByEnvMutex;
+std::unordered_map<napi_env, AEEventHandlerUPP> gAEEventHandlerUPPsByEnv;
+std::unordered_set<napi_env> gEnvsWithCleanupHooks;
+std::unordered_set<napi_env> gPoisonedEnvs;
 
 static OSErr AppleEventHandlerThunk(const AppleEvent *event, AppleEvent *reply,
                                     SRefCon refCon);
 
-static AEEventHandlerUPP EnsureAEHandlerUPP(napi_env env) {
-  std::lock_guard<std::mutex> lock(gAEHandlersByEnvMutex);
-  auto it = gAEHandlersByEnv.find(env);
-  if (it == gAEHandlersByEnv.end()) {
-    auto handler = NewAEEventHandlerUPP(AppleEventHandlerThunk);
-    gAEHandlersByEnv[env] = handler;
-    return handler;
+static void CleanupEnvAppleEventState(void *data) {
+  auto env = static_cast<napi_env>(data);
+
+  AEEventHandlerUPP envUPP = nullptr;
+  {
+    std::lock_guard<std::mutex> lock(gAEEventHandlerUPPsByEnvMutex);
+    auto uppIt = gAEEventHandlerUPPsByEnv.find(env);
+    if (uppIt != gAEEventHandlerUPPsByEnv.end()) {
+      envUPP = uppIt->second;
+      gAEEventHandlerUPPsByEnv.erase(uppIt);
+    }
+    gEnvsWithCleanupHooks.erase(env);
+    gPoisonedEnvs.erase(env);
+  }
+
+  if (!envUPP) {
+    return;
+  }
+
+  std::vector<HandlerKey> keysForEnv;
+  {
+    std::lock_guard<std::mutex> lock(gAEJSHandlersMutex);
+    for (const auto &[key, ctx] : gAEJSHandlers) {
+      if (ctx && ctx->env == env) {
+        keysForEnv.push_back(key);
+      }
+    }
+  }
+
+  for (const auto &key : keysForEnv) {
+    AERemoveEventHandler(key.eventClass, key.eventID, envUPP, false);
+  }
+
+  {
+    std::lock_guard<std::mutex> lock(gAEJSHandlersMutex);
+    for (const auto &key : keysForEnv) {
+      gAEJSHandlers.erase(key);
+    }
+  }
+
+  DisposeAEEventHandlerUPP(envUPP);
+}
+
+static napi_status EnsureEnvCleanupHookRegistered(napi_env env) {
+  std::lock_guard<std::mutex> lock(gAEEventHandlerUPPsByEnvMutex);
+  if (gEnvsWithCleanupHooks.find(env) != gEnvsWithCleanupHooks.end()) {
+    return napi_ok;
+  }
+
+  napi_status status = napi_add_env_cleanup_hook(env, CleanupEnvAppleEventState,
+                                                 static_cast<void *>(env));
+  if (status == napi_ok) {
+    gEnvsWithCleanupHooks.insert(env);
+  }
+  return status;
+}
+
+static AEEventHandlerUPP GetAEHandlerUPP(napi_env env) {
+  std::lock_guard<std::mutex> lock(gAEEventHandlerUPPsByEnvMutex);
+  auto it = gAEEventHandlerUPPsByEnv.find(env);
+  if (it == gAEEventHandlerUPPsByEnv.end()) {
+    return nullptr;
   }
   return it->second;
+}
+
+static bool IsEnvPoisoned(napi_env env) {
+  std::lock_guard<std::mutex> lock(gAEEventHandlerUPPsByEnvMutex);
+  return gPoisonedEnvs.find(env) != gPoisonedEnvs.end();
+}
+
+static void MarkEnvPoisoned(napi_env env) {
+  std::lock_guard<std::mutex> lock(gAEEventHandlerUPPsByEnvMutex);
+  gPoisonedEnvs.insert(env);
+}
+
+static AEEventHandlerUPP EnsureAEHandlerUPP(napi_env env) {
+  AEEventHandlerUPP existingUPP = nullptr;
+  bool hasCleanupHook = false;
+  {
+    std::lock_guard<std::mutex> lock(gAEEventHandlerUPPsByEnvMutex);
+    if (gPoisonedEnvs.find(env) != gPoisonedEnvs.end()) {
+      return nullptr;
+    }
+    auto it = gAEEventHandlerUPPsByEnv.find(env);
+    if (it != gAEEventHandlerUPPsByEnv.end()) {
+      existingUPP = it->second;
+    }
+    hasCleanupHook =
+        gEnvsWithCleanupHooks.find(env) != gEnvsWithCleanupHooks.end();
+  }
+
+  if (existingUPP) {
+    // State is consistent, so we can return the cached UPP.
+    if (hasCleanupHook) {
+      return existingUPP;
+    }
+
+    // Repair inconsistent state: cached UPP exists but cleanup hook is missing.
+    if (EnsureEnvCleanupHookRegistered(env) == napi_ok) {
+      return existingUPP;
+    }
+    MarkEnvPoisoned(env);
+    return nullptr;
+  }
+
+  if (EnsureEnvCleanupHookRegistered(env) != napi_ok) {
+    MarkEnvPoisoned(env);
+    return nullptr;
+  }
+
+  std::lock_guard<std::mutex> lock(gAEEventHandlerUPPsByEnvMutex);
+  auto existing = gAEEventHandlerUPPsByEnv.find(env);
+  if (existing != gAEEventHandlerUPPsByEnv.end()) {
+    return existing->second;
+  }
+
+  auto handler = NewAEEventHandlerUPP(AppleEventHandlerThunk);
+  gAEEventHandlerUPPsByEnv[env] = handler;
+  return handler;
 }
 
 static OSErr AppleEventHandlerThunk(const AppleEvent *event, AppleEvent *reply,
@@ -237,10 +352,10 @@ Napi::Value HandleAppleEvent(const Napi::CallbackInfo &info) {
   HandlerContext *ctx = nullptr;
 
   {
-    std::lock_guard<std::mutex> lock(gRegistryMutex);
+    std::lock_guard<std::mutex> lock(gAEJSHandlersMutex);
 
-    auto it = gHandlers.find(key);
-    if (it != gHandlers.end()) {
+    auto it = gAEJSHandlers.find(key);
+    if (it != gAEJSHandlers.end()) {
       Napi::Error::New(env, "Handler already registered")
           .ThrowAsJavaScriptException();
       return env.Undefined();
@@ -255,7 +370,8 @@ Napi::Value HandleAppleEvent(const Napi::CallbackInfo &info) {
 
     HandlerContext *raw = ctxPtr.get();
 
-    auto [insertedIt, didInsert] = gHandlers.emplace(key, std::move(ctxPtr));
+    auto [insertedIt, didInsert] =
+        gAEJSHandlers.emplace(key, std::move(ctxPtr));
     if (!didInsert) {
       Napi::Error::New(env, "Failed to register handler")
           .ThrowAsJavaScriptException();
@@ -266,13 +382,24 @@ Napi::Value HandleAppleEvent(const Napi::CallbackInfo &info) {
   }
 
   AEEventHandlerUPP handlerUPP = EnsureAEHandlerUPP(env);
+  if (!handlerUPP) {
+    {
+      std::lock_guard<std::mutex> lock(gAEJSHandlersMutex);
+      gAEJSHandlers.erase(key);
+    }
+    const char *msg = IsEnvPoisoned(env)
+                          ? POISONED_ENV_ERROR_MESSAGE
+                          : "Failed to install Apple event handler";
+    Napi::Error::New(env, msg).ThrowAsJavaScriptException();
+    return env.Undefined();
+  }
 
   OSErr err = AEInstallEventHandler(key.eventClass, key.eventID, handlerUPP,
                                     ctx, false);
 
   if (err != noErr) {
-    std::lock_guard<std::mutex> lock(gRegistryMutex);
-    gHandlers.erase(key);
+    std::lock_guard<std::mutex> lock(gAEJSHandlersMutex);
+    gAEJSHandlers.erase(key);
     OSError::Throw(env, err, "AEInstallEventHandler failed");
     return env.Undefined();
   }
@@ -401,14 +528,27 @@ Napi::Value UnhandleAppleEvent(const Napi::CallbackInfo &info) {
     return env.Undefined();
   }
 
-  OSErr err = AERemoveEventHandler(key.eventClass, key.eventID,
-                                   EnsureAEHandlerUPP(env), false);
+  if (IsEnvPoisoned(env)) {
+    Napi::Error::New(env, POISONED_ENV_ERROR_MESSAGE)
+        .ThrowAsJavaScriptException();
+    return env.Undefined();
+  }
+
+  AEEventHandlerUPP handlerUPP = GetAEHandlerUPP(env);
+  if (!handlerUPP) {
+    std::lock_guard<std::mutex> lock(gAEJSHandlersMutex);
+    gAEJSHandlers.erase(key);
+    return env.Undefined();
+  }
+
+  OSErr err =
+      AERemoveEventHandler(key.eventClass, key.eventID, handlerUPP, false);
   if (err != noErr) {
     OSError::Throw(env, err, "AERemoveEventHandler failed");
     return env.Undefined();
   }
-  std::lock_guard<std::mutex> lock(gRegistryMutex);
-  gHandlers.erase(key);
+  std::lock_guard<std::mutex> lock(gAEJSHandlersMutex);
+  gAEJSHandlers.erase(key);
   return env.Undefined();
 }
 } // namespace Handling
