@@ -349,42 +349,42 @@ static AEEventHandlerUPP EnsureAEHandlerUPP(napi_env env) {
   return handler;
 }
 } // namespace UPPs
+
+namespace Carbon {
+static OSErr MakeErrorReply(AppleEvent *reply, OSErr errorCode,
+                            const std::string &errorMessage);
+}
+
 namespace Node {
 OSErr InvokeJSHandlerOnMainThreadOrThrow(const Napi::Env &env,
                                          const AppleEvent *event,
                                          AppleEvent *reply,
                                          Napi::Function handler) {
-  // TODO: We actually shouldn't be doing this. It defers to any other handlers
-  //    and ultimately leads to Cocoa scripting initializing, which may step on
-  //    our toes and register its own event handlers for the same event IDs.
-  //    If we use `events` instead of `commands` in the scripting definition,
-  //    that mitigates that behavior, but we should still be careful.
-  auto failAsNotHandled = [&env]() -> OSErr {
-    if (env.IsExceptionPending()) {
-      // Clear pending JS exception so it does not bubble out of the native
-      // AppleEvent callback boundary and terminate the process.
-      env.GetAndClearPendingException();
-    }
-    return errAEEventNotHandled;
-  };
-
   try {
     if (!event) {
-      return failAsNotHandled();
+      return Carbon::MakeErrorReply(reply, errAEDescNotFound, "Missing event");
     }
 
     auto wrappedEvent = CopyAndWrapAEDescOrThrow(env, event);
     if (!wrappedEvent.IsObject() ||
         !wrappedEvent.As<Napi::Object>().InstanceOf(
             AEEventDescriptor::constructor.Value())) {
-      return failAsNotHandled();
+      return Carbon::MakeErrorReply(reply, errAENotAppleEvent, "Invalid event");
     }
 
     bool replyExpected = reply->descriptorType != typeNull;
     auto result =
         handler.Call({wrappedEvent, Napi::Boolean::New(env, replyExpected)});
-    if (env.IsExceptionPending() || !result.IsObject()) {
-      return failAsNotHandled();
+    if (env.IsExceptionPending()) {
+      Napi::Error error = env.GetAndClearPendingException();
+      return Carbon::MakeErrorReply(
+          reply, errOSAGeneralError,
+          "JS handler encountered an uncaught exception: " + error.Message());
+    }
+
+    if (!result.IsObject()) {
+      return Carbon::MakeErrorReply(reply, errOSAGeneralError,
+                                    "JS handler returned a non-object result");
     }
 
     Napi::Object resultObject = result.As<Napi::Object>();
@@ -392,7 +392,9 @@ OSErr InvokeJSHandlerOnMainThreadOrThrow(const Napi::Env &env,
     for (uint32_t i = 0; i < keys.Length(); ++i) {
       Napi::Value key = keys.Get(i);
       if (!key.IsString()) {
-        return failAsNotHandled();
+        return Carbon::MakeErrorReply(
+            reply, errAEWrongDataType,
+            "JS handler returned a property keyword that wasn't a string");
       }
       FourCharCode keyword =
           StringToFourCharCodeOrThrow(env, key.As<Napi::String>());
@@ -401,9 +403,11 @@ OSErr InvokeJSHandlerOnMainThreadOrThrow(const Napi::Env &env,
       //    though we'll actually end up swallowing any JS exception that
       //    it throws (since we're not on a JS path here).
       auto *wrapper = UnwrapDescriptorOrThrow(
-          env, value, "Reply values must be descriptors");
+          env, value, "Reply property values must be descriptors");
       if (!wrapper) {
-        return failAsNotHandled();
+        return Carbon::MakeErrorReply(
+            reply, errAEWrongDataType,
+            "JS handler returned a parameter that wasn't a descriptor");
       }
       OSErr putErr =
           AEPutParamDesc(reply, keyword, wrapper->GetRawDescriptor());
@@ -413,11 +417,14 @@ OSErr InvokeJSHandlerOnMainThreadOrThrow(const Napi::Env &env,
     }
     return noErr;
   } catch (const Napi::Error &) {
-    return failAsNotHandled();
+    return Carbon::MakeErrorReply(reply, errOSAGeneralError,
+                                  "AEJS encountered an internal error");
   } catch (const std::exception &) {
-    return failAsNotHandled();
+    return Carbon::MakeErrorReply(reply, errOSAGeneralError,
+                                  "AEJS encountered an internal error");
   } catch (...) {
-    return failAsNotHandled();
+    return Carbon::MakeErrorReply(reply, errOSAGeneralError,
+                                  "AEJS encountered an internal error");
   }
 }
 } // namespace Node
