@@ -361,7 +361,214 @@ static AEEventHandlerUPP EnsureAEHandlerUPP(napi_env env) {
 namespace Carbon {
 static OSErr MakeErrorReply(AppleEvent *reply, OSStatus errorCode,
                             const std::string &errorMessage);
+static bool
+GetAppleEventTimeoutDuration(const AppleEvent *event,
+                             std::chrono::milliseconds *outDuration);
 } // namespace Carbon
+
+namespace Node {
+OSErr ApplyResultObjectToReply(const Napi::Env &env, Napi::Object &resultObject,
+                               AppleEvent *reply);
+namespace Promises {
+namespace {
+
+struct PromiseState {
+  std::mutex mutex;
+  std::condition_variable cv;
+  bool settled = false;
+  bool fulfilled = false;
+  OSErr failureCode = errOSAGeneralError;
+  std::string failureMessage = "JS handler promise rejected";
+  Napi::ObjectReference fulfilledObject;
+};
+class ResumeSuspendedEventWorker : public Napi::AsyncWorker {
+private:
+  std::shared_ptr<PromiseState> state_;
+  const AppleEvent *suspendedEvent_ = nullptr;
+  AppleEvent *reply_ = nullptr;
+  std::chrono::milliseconds timeoutDuration_{};
+  bool hasTimeout_ = false;
+
+public:
+  ResumeSuspendedEventWorker(Napi::Env env, std::shared_ptr<PromiseState> state,
+                             const AppleEvent *suspendedEvent,
+                             AppleEvent *reply,
+                             std::chrono::milliseconds timeoutDuration,
+                             bool hasTimeout)
+      : Napi::AsyncWorker(env), state_(state), suspendedEvent_(suspendedEvent),
+        reply_(reply), timeoutDuration_(timeoutDuration),
+        hasTimeout_(hasTimeout) {}
+
+  void Execute() override {
+    std::unique_lock<std::mutex> lock(state_->mutex);
+    if (hasTimeout_) {
+      bool settled = state_->cv.wait_for(lock, timeoutDuration_,
+                                         [&] { return state_->settled; });
+      if (!settled) {
+        state_->settled = true;
+        state_->fulfilled = false;
+        state_->failureCode = errAETimeout;
+        state_->failureMessage =
+            "Apple event handler promise timed out on the receiving end";
+      }
+      return;
+    }
+    state_->cv.wait(lock, [&] { return state_->settled; });
+  }
+
+  void OnOK() override {
+    bool fulfilled = false;
+    OSErr failureCode = errOSAGeneralError;
+    std::string failureMessage;
+    {
+      std::lock_guard<std::mutex> lock(state_->mutex);
+      fulfilled = state_->fulfilled;
+      failureCode = state_->failureCode;
+      failureMessage = state_->failureMessage;
+    }
+
+    OSErr replyErr = noErr;
+    if (fulfilled) {
+      Napi::HandleScope scope(Env());
+      Napi::Object resultObject = state_->fulfilledObject.Value();
+      replyErr = Node::ApplyResultObjectToReply(Env(), resultObject, reply_);
+      if (replyErr != noErr) {
+        replyErr =
+            Carbon::MakeErrorReply(reply_, replyErr,
+                                   "JS handler promise produced an invalid "
+                                   "reply object");
+      }
+    } else {
+      replyErr = Carbon::MakeErrorReply(reply_, failureCode, failureMessage);
+    }
+
+    if (replyErr != noErr) {
+      Carbon::MakeErrorReply(reply_, replyErr,
+                             "Failed to build reply for suspended Apple event");
+    }
+
+    AEResumeTheCurrentEvent(suspendedEvent_, reply_,
+                            reinterpret_cast<AEEventHandlerUPP>(kAENoDispatch),
+                            0);
+  }
+};
+
+static std::string PromiseRejectionToMessage(const Napi::CallbackInfo &info) {
+  Napi::Env env = info.Env();
+  if (info.Length() == 0 || info[0].IsUndefined() || info[0].IsNull()) {
+    return "JS handler promise rejected without a reason";
+  }
+
+  Napi::Value reason = info[0];
+  try {
+    if (reason.IsObject()) {
+      Napi::Object objectReason = reason.As<Napi::Object>();
+      Napi::Value message = objectReason.Get("message");
+      if (message.IsString()) {
+        std::string withMessage = message.As<Napi::String>().Utf8Value();
+        if (!withMessage.empty()) {
+          return "JS handler promise rejected: " + withMessage;
+        }
+      }
+    }
+    std::string asString = reason.ToString().Utf8Value();
+    if (!asString.empty()) {
+      return "JS handler promise rejected: " + asString;
+    }
+  } catch (const Napi::Error &) {
+    if (env.IsExceptionPending()) {
+      env.GetAndClearPendingException();
+    }
+  }
+  return "JS handler promise rejected with an unknown reason";
+}
+} // namespace
+
+OSErr HandlePromiseResult(const Napi::Env &env, Napi::Promise &promise,
+                          const AppleEvent *event, AppleEvent *reply) {
+  if (!event || !reply) {
+    return paramErr;
+  }
+
+  OSErr suspendErr = AESuspendTheCurrentEvent(event);
+  if (suspendErr != noErr) {
+    return suspendErr;
+  }
+
+  std::chrono::milliseconds timeoutDuration{};
+  bool hasTimeout =
+      Carbon::GetAppleEventTimeoutDuration(event, &timeoutDuration);
+  auto state = std::make_shared<PromiseState>();
+  auto *worker = new ResumeSuspendedEventWorker(env, state, event, reply,
+                                                timeoutDuration, hasTimeout);
+
+  Napi::Function onFulfilled = Napi::Function::New(
+      env, [state](const Napi::CallbackInfo &info) -> Napi::Value {
+        Napi::Env env = info.Env();
+        std::lock_guard<std::mutex> lock(state->mutex);
+        if (state->settled) {
+          return env.Undefined();
+        }
+        Napi::Value value = info.Length() > 0 ? info[0] : env.Undefined();
+        if (!value.IsObject()) {
+          state->fulfilled = false;
+          state->failureCode = errAEWrongDataType;
+          state->failureMessage =
+              "JS handler promise resolved with a non-object result";
+        } else {
+          state->fulfilled = true;
+          state->fulfilledObject = Napi::Persistent(value.As<Napi::Object>());
+        }
+        state->settled = true;
+        state->cv.notify_all();
+        return env.Undefined();
+      });
+
+  Napi::Function onRejected = Napi::Function::New(
+      env, [state](const Napi::CallbackInfo &info) -> Napi::Value {
+        Napi::Env env = info.Env();
+        std::lock_guard<std::mutex> lock(state->mutex);
+        if (state->settled) {
+          return env.Undefined();
+        }
+        state->fulfilled = false;
+        state->failureCode = errOSAGeneralError;
+        state->failureMessage = PromiseRejectionToMessage(info);
+        state->settled = true;
+        state->cv.notify_all();
+        return env.Undefined();
+      });
+
+  try {
+    promise.Then(onFulfilled, onRejected);
+    if (env.IsExceptionPending()) {
+      Napi::Error thenErr = env.GetAndClearPendingException();
+      std::lock_guard<std::mutex> lock(state->mutex);
+      state->fulfilled = false;
+      state->failureCode = errOSAGeneralError;
+      state->failureMessage =
+          "Failed to attach promise handlers: " + thenErr.Message();
+      state->settled = true;
+      state->cv.notify_all();
+    }
+  } catch (const Napi::Error &thenErr) {
+    if (env.IsExceptionPending()) {
+      env.GetAndClearPendingException();
+    }
+    std::lock_guard<std::mutex> lock(state->mutex);
+    state->fulfilled = false;
+    state->failureCode = errOSAGeneralError;
+    state->failureMessage =
+        "Failed to attach promise handlers: " + thenErr.Message();
+    state->settled = true;
+    state->cv.notify_all();
+  }
+
+  worker->Queue();
+  return noErr;
+}
+} // namespace Promises
+} // namespace Node
 
 namespace Node {
 OSErr ApplyResultObjectToReply(const Napi::Env &env, Napi::Object &resultObject,
@@ -425,6 +632,11 @@ OSErr InvokeJSHandlerOnMainThreadOrThrow(const Napi::Env &env,
     if (!result.IsObject()) {
       return Carbon::MakeErrorReply(reply, errOSAGeneralError,
                                     "JS handler returned a non-object result");
+    }
+
+    if (result.IsPromise()) {
+      Napi::Promise promise = result.As<Napi::Promise>();
+      return Node::Promises::HandlePromiseResult(env, promise, event, reply);
     }
 
     Napi::Object resultObject = result.As<Napi::Object>();
