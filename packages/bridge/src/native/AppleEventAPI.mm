@@ -113,12 +113,12 @@ Napi::Value SendAppleEvent(const Napi::CallbackInfo &info) {
     return env.Null();
   }
 
-  auto *wrapper = UnwrapDescriptorOrThrow(
-      env, info[0], "sendAppleEvent expects AEDescriptor");
+  auto *wrapper = UnwrapDescriptor(info[0]);
   if (!wrapper) {
+    Napi::Error::New(env, "Invalid event descriptor")
+        .ThrowAsJavaScriptException();
     return env.Null();
   }
-
   const AEDesc *rawDesc = wrapper->GetRawDescriptor();
   if (!rawDesc) {
     Napi::Error::New(env, "Uninitialized descriptor")
@@ -412,13 +412,11 @@ OSErr InvokeJSHandlerOnMainThreadOrThrow(const Napi::Env &env,
                                       "that wasn't a valid FourCharCode");
       }
       Napi::Value value = resultObject.Get(key);
-      auto *wrapper = UnwrapDescriptorOrThrow(
-          env, value,
-          "JS handler returned a property value that wasn't a descriptor");
+      auto *wrapper = UnwrapDescriptor(value);
       if (!wrapper) {
         return Carbon::MakeErrorReply(
             reply, errAEWrongDataType,
-            "JS handler returned a parameter that wasn't a descriptor");
+            "JS handler returned a property value that wasn't a descriptor");
       }
       OSErr putErr =
           AEPutParamDesc(reply, keyword, wrapper->GetRawDescriptor());
@@ -429,15 +427,15 @@ OSErr InvokeJSHandlerOnMainThreadOrThrow(const Napi::Env &env,
     return noErr;
   } catch (const Napi::Error &error) {
     return Carbon::MakeErrorReply(reply, errOSAGeneralError,
-                                  "AEJS encountered an internal error: " +
+                                  "AEJS encountered an internal JS error: " +
                                       error.Message());
   } catch (const std::exception &exception) {
     return Carbon::MakeErrorReply(reply, errOSAGeneralError,
-                                  "AEJS encountered an internal error: " +
+                                  "AEJS encountered an internal C++ error: " +
                                       std::string(exception.what()));
   } catch (...) {
     return Carbon::MakeErrorReply(reply, errOSAGeneralError,
-                                  "AEJS encountered an internal error");
+                                  "AEJS encountered an unknown internal error");
   }
 }
 } // namespace Node

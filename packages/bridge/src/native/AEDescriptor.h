@@ -193,9 +193,7 @@ class AEUnknownDescriptor : public AEDescriptorWrapper<AEUnknownDescriptor> {
   AEJS_CPP_DESCRIPTOR_CLASS_COMMON(AEUnknownDescriptor)
 };
 
-AEDescriptorWrapper<AEDescriptor> *
-UnwrapDescriptorOrThrow(const Napi::Env &env, const Napi::Value &value,
-                        const char *errorMessage);
+AEDescriptorWrapper<AEDescriptor> *UnwrapDescriptor(const Napi::Value &value);
 
 #undef AEJS_CPP_DESCRIPTOR_CLASS_COMMON
 

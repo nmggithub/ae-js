@@ -100,15 +100,14 @@ bool InsertKeywordMap(Napi::Env env, AEDesc *target, const Napi::Object &map,
     }
 
     Napi::Value entry = map.Get(keyValue);
-    auto *wrapper = UnwrapDescriptorOrThrow(env, entry, invalidValueMessage);
+    auto *wrapper = UnwrapDescriptor(entry);
     if (!wrapper) {
+      Napi::Error::New(env, invalidValueMessage).ThrowAsJavaScriptException();
       return false;
     }
-
     OSErr err = putFn(target, keyword, wrapper->GetRawDescriptor());
     if (err != noErr) {
       OSError::Throw(env, err, putError);
-      return false;
     }
   }
   return true;
@@ -147,18 +146,14 @@ DescriptorKind GetDescriptorKind(const AEDesc *desc) {
 
 } // namespace
 
-AEDescriptorWrapper<AEDescriptor> *
-UnwrapDescriptorOrThrow(const Napi::Env &env, const Napi::Value &value,
-                        const char *errorMessage) {
+AEDescriptorWrapper<AEDescriptor> *UnwrapDescriptor(const Napi::Value &value) {
   if (!value.IsObject()) {
-    Napi::TypeError::New(env, errorMessage).ThrowAsJavaScriptException();
     return nullptr;
   }
 
   auto *wrapper =
       Napi::ObjectWrap<AEDescriptor>::Unwrap(value.As<Napi::Object>());
   if (!wrapper) {
-    Napi::TypeError::New(env, errorMessage).ThrowAsJavaScriptException();
     return nullptr;
   }
 
@@ -307,9 +302,10 @@ void AEListDescriptor::InitFromJS(const Napi::CallbackInfo &info) {
   desc->descriptorType = type;
   const uint32_t length = items.Length();
   for (uint32_t i = 0; i < length; ++i) {
-    auto *wrapper =
-        UnwrapDescriptorOrThrow(env, items[i], "Invalid AEDescriptor item");
+    auto *wrapper = UnwrapDescriptor(items[i]);
     if (!wrapper) {
+      Napi::Error::New(env, "Invalid AEDescriptor item")
+          .ThrowAsJavaScriptException();
       return;
     }
 
@@ -434,9 +430,10 @@ void AEEventDescriptor::InitFromJS(const Napi::CallbackInfo &info) {
     return;
   }
 
-  auto *targetWrapper =
-      UnwrapDescriptorOrThrow(env, info[2], "Invalid target descriptor");
+  auto *targetWrapper = UnwrapDescriptor(info[2]);
   if (!targetWrapper) {
+    Napi::Error::New(env, "Invalid target descriptor")
+        .ThrowAsJavaScriptException();
     return;
   }
 
