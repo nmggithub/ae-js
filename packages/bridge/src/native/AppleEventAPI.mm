@@ -364,6 +364,38 @@ static OSErr MakeErrorReply(AppleEvent *reply, OSStatus errorCode,
 }
 
 namespace Node {
+OSErr ApplyResultObjectToReply(const Napi::Env &env, Napi::Object &resultObject,
+                               AppleEvent *reply) {
+  Napi::Array keys = resultObject.GetPropertyNames();
+  for (uint32_t i = 0; i < keys.Length(); ++i) {
+    Napi::Value key = keys.Get(i);
+    if (!key.IsString()) {
+      return Carbon::MakeErrorReply(
+          reply, errAEWrongDataType,
+          "JS handler returned a property keyword that wasn't a string");
+    }
+    FourCharCode keyword =
+        StringToFourCharCode(key.As<Napi::String>().Utf8Value());
+    if (keyword == 0) {
+      return Carbon::MakeErrorReply(reply, errAEWrongDataType,
+                                    "JS handler returned a property keyword "
+                                    "that wasn't a valid FourCharCode");
+    }
+    Napi::Value value = resultObject.Get(key);
+    auto *wrapper = UnwrapDescriptor(value);
+    if (!wrapper) {
+      return Carbon::MakeErrorReply(
+          reply, errAEWrongDataType,
+          "JS handler returned a property value that wasn't a descriptor");
+    }
+    OSErr putErr = AEPutParamDesc(reply, keyword, wrapper->GetRawDescriptor());
+    if (putErr != noErr) {
+      return putErr;
+    }
+  }
+  return noErr;
+}
+
 OSErr InvokeJSHandlerOnMainThreadOrThrow(const Napi::Env &env,
                                          const AppleEvent *event,
                                          AppleEvent *reply,
@@ -396,35 +428,8 @@ OSErr InvokeJSHandlerOnMainThreadOrThrow(const Napi::Env &env,
     }
 
     Napi::Object resultObject = result.As<Napi::Object>();
-    Napi::Array keys = resultObject.GetPropertyNames();
-    for (uint32_t i = 0; i < keys.Length(); ++i) {
-      Napi::Value key = keys.Get(i);
-      if (!key.IsString()) {
-        return Carbon::MakeErrorReply(
-            reply, errAEWrongDataType,
-            "JS handler returned a property keyword that wasn't a string");
-      }
-      FourCharCode keyword =
-          StringToFourCharCode(key.As<Napi::String>().Utf8Value());
-      if (keyword == 0) {
-        return Carbon::MakeErrorReply(reply, errAEWrongDataType,
-                                      "JS handler returned a property keyword "
-                                      "that wasn't a valid FourCharCode");
-      }
-      Napi::Value value = resultObject.Get(key);
-      auto *wrapper = UnwrapDescriptor(value);
-      if (!wrapper) {
-        return Carbon::MakeErrorReply(
-            reply, errAEWrongDataType,
-            "JS handler returned a property value that wasn't a descriptor");
-      }
-      OSErr putErr =
-          AEPutParamDesc(reply, keyword, wrapper->GetRawDescriptor());
-      if (putErr != noErr) {
-        return putErr;
-      }
-    }
-    return noErr;
+    return Node::ApplyResultObjectToReply(env, resultObject, reply);
+
   } catch (const Napi::Error &error) {
     return Carbon::MakeErrorReply(reply, errOSAGeneralError,
                                   "AEJS encountered an internal JS error: " +
