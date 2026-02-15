@@ -385,20 +385,22 @@ struct PromiseState {
 class ResumeSuspendedEventWorker : public Napi::AsyncWorker {
 private:
   std::shared_ptr<PromiseState> state_;
-  const AppleEvent *suspendedEvent_ = nullptr;
+  AppleEvent *suspendedEvent_ = nullptr;
   AppleEvent *reply_ = nullptr;
   std::chrono::milliseconds timeoutDuration_{};
   bool hasTimeout_ = false;
+  std::thread::id suspendedEventThreadId_;
 
 public:
   ResumeSuspendedEventWorker(Napi::Env env, std::shared_ptr<PromiseState> state,
-                             const AppleEvent *suspendedEvent,
-                             AppleEvent *reply,
+                             AppleEvent *suspendedEvent, AppleEvent *reply,
                              std::chrono::milliseconds timeoutDuration,
-                             bool hasTimeout)
+                             bool hasTimeout,
+                             std::thread::id suspendedEventThreadId)
       : Napi::AsyncWorker(env), state_(state), suspendedEvent_(suspendedEvent),
         reply_(reply), timeoutDuration_(timeoutDuration),
-        hasTimeout_(hasTimeout) {}
+        hasTimeout_(hasTimeout),
+        suspendedEventThreadId_(suspendedEventThreadId) {}
 
   void Execute() override {
     std::unique_lock<std::mutex> lock(state_->mutex);
@@ -427,7 +429,9 @@ public:
       failureCode = state_->failureCode;
       failureMessage = state_->failureMessage;
     }
-
+    if (std::this_thread::get_id() != suspendedEventThreadId_) {
+      return;
+    }
     OSErr replyErr = noErr;
     if (fulfilled) {
       Napi::HandleScope scope(Env());
@@ -491,6 +495,26 @@ OSErr HandlePromiseResult(const Napi::Env &env, Napi::Promise &promise,
     return paramErr;
   }
 
+  // Documentation doesn't say we have to do this, but it seems to keep us from
+  // crashing when the event is resumed. Copying the event and reply here seems
+  // to give them more stable lifetimes across suspension and resumption.
+
+  auto suspendedEventCopy = std::make_unique<AppleEvent>();
+  OSErr eventCopyErr =
+      AEDuplicateDesc(reinterpret_cast<const AEDesc *>(event),
+                      reinterpret_cast<AEDesc *>(suspendedEventCopy.get()));
+  if (eventCopyErr != noErr) {
+    return eventCopyErr;
+  }
+
+  auto replyCopy = std::make_unique<AppleEvent>();
+  OSErr replyCopyErr =
+      AEDuplicateDesc(reinterpret_cast<const AEDesc *>(reply),
+                      reinterpret_cast<AEDesc *>(replyCopy.get()));
+  if (replyCopyErr != noErr) {
+    return replyCopyErr;
+  }
+
   OSErr suspendErr = AESuspendTheCurrentEvent(event);
   if (suspendErr != noErr) {
     return suspendErr;
@@ -500,8 +524,9 @@ OSErr HandlePromiseResult(const Napi::Env &env, Napi::Promise &promise,
   bool hasTimeout =
       Carbon::GetAppleEventTimeoutDuration(event, &timeoutDuration);
   auto state = std::make_shared<PromiseState>();
-  auto *worker = new ResumeSuspendedEventWorker(env, state, event, reply,
-                                                timeoutDuration, hasTimeout);
+  auto *worker = new ResumeSuspendedEventWorker(
+      env, state, suspendedEventCopy.release(), replyCopy.release(),
+      timeoutDuration, hasTimeout, std::this_thread::get_id());
 
   Napi::Function onFulfilled = Napi::Function::New(
       env, [state](const Napi::CallbackInfo &info) -> Napi::Value {
