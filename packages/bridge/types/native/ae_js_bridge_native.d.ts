@@ -207,6 +207,10 @@ declare module '#ae_js_bridge_native' {
         expectReply: boolean
     ): Promise<AEEventDescriptor | null>;
 
+    /**
+     * An object of parameters for an Apple event handler to
+     *  return when using the native bridge API.
+     */
     type EventHandlerReturn = Record<AEKeyword, AEDescriptor> | null
 
     /**

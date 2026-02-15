@@ -643,10 +643,56 @@ async function sendJSAppleEvent(
         : new AEJSEventDescriptor(nativeResult);
 }
 
+
+/**
+ * An object of parameters for an Apple event handler to return
+ *  when using the JavaScript API around the native bridge.
+ */
 type JSEventHandlerReturn = Record<
     AEJSBridgeNative.AEKeyword,
     AEJSDescriptor<AEJSBridgeNative.AEDescriptor>
 > | null;
+
+/**
+ * Converts a Promise rejection or thrown value to an
+ *  object of parameters for an error reply.
+ * @param rejectionOrThrown - The rejection or thrown value.
+ * @returns An object of parameters for an error reply.
+ */
+function rejectionOrThrownToErrorParameters(
+    rejectionOrThrown: unknown
+): JSEventHandlerReturn {
+    if (rejectionOrThrown instanceof Error) {
+        const errorName = rejectionOrThrown.name;
+        const errorMessage = rejectionOrThrown.message;
+        return makeErrorParameters(
+            `JS handler threw an error (${errorName}): ${errorMessage}`
+        );
+    }
+    return makeErrorParameters(
+        'JS handler threw an unknown error'
+    );
+};
+
+/**
+ * Converts a JavaScript event handler result value to one
+ *  that can be used with the native bridge API.
+ * @param jsResult - The JavaScript event handler result value.
+ * @returns The native event handler result value.
+ */
+function jsResultToNativeResult(
+    jsResult: JSEventHandlerReturn
+): AEJSBridgeNative.EventHandlerReturn {
+    return jsResult === null
+        ? null
+        : Object.fromEntries(Object
+            .entries(jsResult)
+            .map(
+                ([key, value]) => [key, value.toNative()]
+            )
+        );
+}
+
 
 /**
  * Installs an Apple event handler for the given event class and event ID.
@@ -668,31 +714,6 @@ function handleJSAppleEvent(
             JSEventHandlerReturn | Promise<JSEventHandlerReturn>
 ) {
     handleAppleEvent(eventClass, eventID, (event, replyExpected) => {
-        const jsResultToNative
-            = (jsResult: JSEventHandlerReturn):
-                AEJSBridgeNative.EventHandlerReturn => {
-                return jsResult === null
-                    ? null
-                    : Object.fromEntries(Object
-                        .entries(jsResult)
-                        .map(
-                            ([key, value]) =>
-                                [key, value.toNative()]
-                        )
-                    );
-            };
-        const rejectionOrThrownToJSResult
-            = (error: unknown): JSEventHandlerReturn => {
-                if (error instanceof Error) {
-                    return makeErrorParameters(
-                        `JS handler threw a(n) \
-                    ${error.name}: ${error.message}`
-                    );
-                }
-                return makeErrorParameters(
-                    'JS handler threw an unknown error'
-                );
-            };
         try {
             const maybePromise = handler(
                 new AEJSEventDescriptor(event),
@@ -700,20 +721,20 @@ function handleJSAppleEvent(
             );
             if (maybePromise instanceof Promise) {
                 return maybePromise
-                    .then(jsResultToNative)
+                    .then(jsResultToNativeResult)
                     .catch(
                         error =>
-                            jsResultToNative(
-                                rejectionOrThrownToJSResult(
+                            jsResultToNativeResult(
+                                rejectionOrThrownToErrorParameters(
                                     error
                                 )
                             )
                     );
             }
-            return jsResultToNative(maybePromise);
+            return jsResultToNativeResult(maybePromise);
         } catch (error) {
-            return jsResultToNative(
-                rejectionOrThrownToJSResult(error)
+            return jsResultToNativeResult(
+                rejectionOrThrownToErrorParameters(error)
             );
         }
     });
