@@ -207,6 +207,8 @@ declare module '#ae_js_bridge_native' {
         expectReply: boolean
     ): Promise<AEEventDescriptor | null>;
 
+    type EventHandlerReturn = Record<AEKeyword, AEDescriptor> | null
+
     /**
      * Installs an Apple event handler for the given event class and event ID.
      * @param eventClass - The event class of the Apple event to handle.
@@ -220,7 +222,7 @@ declare module '#ae_js_bridge_native' {
         eventClass: AEEventClass,
         eventID: AEEventID,
         handler: (event: AEEventDescriptor, replyExpected: boolean)
-            => Record<AEKeyword, AEDescriptor> | null
+            => EventHandlerReturn | Promise<EventHandlerReturn>
     ): void;
 
     /**
