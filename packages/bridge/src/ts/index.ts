@@ -668,10 +668,9 @@ function handleJSAppleEvent(
             JSEventHandlerReturn | Promise<JSEventHandlerReturn>
 ) {
     handleAppleEvent(eventClass, eventID, (event, replyExpected) => {
-        const convert:
-            (jsResult: JSEventHandlerReturn)
-                => AEJSBridgeNative.EventHandlerReturn
-            = (jsResult) => {
+        const jsResultToNative
+            = (jsResult: JSEventHandlerReturn):
+                AEJSBridgeNative.EventHandlerReturn => {
                 return jsResult === null
                     ? null
                     : Object.fromEntries(Object
@@ -682,28 +681,39 @@ function handleJSAppleEvent(
                         )
                     );
             };
+        const rejectionOrThrownToJSResult
+            = (error: unknown): JSEventHandlerReturn => {
+                if (error instanceof Error) {
+                    return makeErrorParameters(
+                        `JS handler threw a(n) \
+                    ${error.name}: ${error.message}`
+                    );
+                }
+                return makeErrorParameters(
+                    'JS handler threw an unknown error'
+                );
+            };
         try {
             const maybePromise = handler(
                 new AEJSEventDescriptor(event),
                 replyExpected
             );
             if (maybePromise instanceof Promise) {
-                return maybePromise.then(convert);
+                return maybePromise
+                    .then(jsResultToNative)
+                    .catch(
+                        error =>
+                            jsResultToNative(
+                                rejectionOrThrownToJSResult(
+                                    error
+                                )
+                            )
+                    );
             }
-            return convert(maybePromise);
+            return jsResultToNative(maybePromise);
         } catch (error) {
-            if (error instanceof Error) {
-                return convert(
-                    makeErrorParameters(
-                        `JS handler threw a(n) \
-                        ${error.name}: ${error.message}`
-                    )
-                );
-            }
-            return convert(
-                makeErrorParameters(
-                    'JS handler threw an unknown error'
-                )
+            return jsResultToNative(
+                rejectionOrThrownToJSResult(error)
             );
         }
     });
