@@ -643,6 +643,11 @@ async function sendJSAppleEvent(
         : new AEJSEventDescriptor(nativeResult);
 }
 
+type JSEventHandlerReturn = Record<
+    AEJSBridgeNative.AEKeyword,
+    AEJSDescriptor<AEJSBridgeNative.AEDescriptor>
+> | null;
+
 /**
  * Installs an Apple event handler for the given event class and event ID.
  * @param eventClass - The event class of the Apple event to handle.
@@ -660,43 +665,47 @@ function handleJSAppleEvent(
             event: AEJSEventDescriptor,
             replyExpected: boolean
         ) =>
-            Record<
-                AEJSBridgeNative.AEKeyword,
-                AEJSDescriptor<AEJSBridgeNative.AEDescriptor>
-            > | null
+            JSEventHandlerReturn | Promise<JSEventHandlerReturn>
 ) {
     handleAppleEvent(eventClass, eventID, (event, replyExpected) => {
-        let jsResult: Record<
-            AEJSBridgeNative.AEKeyword,
-            AEJSDescriptor<AEJSBridgeNative.AEDescriptor>
-        > | null = null;
+        const convert:
+            (jsResult: JSEventHandlerReturn)
+                => AEJSBridgeNative.EventHandlerReturn
+            = (jsResult) => {
+                return jsResult === null
+                    ? null
+                    : Object.fromEntries(Object
+                        .entries(jsResult)
+                        .map(
+                            ([key, value]) =>
+                                [key, value.toNative()]
+                        )
+                    );
+            };
         try {
-            jsResult = handler(
+            const maybePromise = handler(
                 new AEJSEventDescriptor(event),
                 replyExpected
             );
+            if (maybePromise instanceof Promise) {
+                return maybePromise.then(convert);
+            }
+            return convert(maybePromise);
         } catch (error) {
             if (error instanceof Error) {
-                jsResult = makeErrorParameters(
-                    `JS handler threw a(n) ${error.name}: ${error.message}`
+                return convert(
+                    makeErrorParameters(
+                        `JS handler threw a(n) \
+                        ${error.name}: ${error.message}`
+                    )
                 );
-            } else jsResult = makeErrorParameters(
-                'JS handler threw an unknown error'
-            );
-        }
-        if (replyExpected && jsResult === null) {
-            jsResult = makeErrorParameters(
-                'JS handler returned null, but reply was expected'
-            );
-        }
-        return Object.fromEntries(
-            Object
-                .entries(jsResult ?? {})
-                .map(
-                    ([key, value]) =>
-                        [key, value.toNative()]
+            }
+            return convert(
+                makeErrorParameters(
+                    'JS handler threw an unknown error'
                 )
-        );
+            );
+        }
     });
 }
 /**
