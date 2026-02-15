@@ -11,7 +11,7 @@
 #include <vector>
 
 namespace ae_js_bridge {
-
+namespace Descriptors {
 #define AEJS_CPP_DESCRIPTOR_CLASS_COMMON(ClassName)                            \
 public:                                                                        \
   static constexpr const char *JSClassName = #ClassName;                       \
@@ -196,5 +196,5 @@ class AEUnknownDescriptor : public AEDescriptorWrapper<AEUnknownDescriptor> {
 AEDescriptorWrapper<AEDescriptor> *UnwrapDescriptor(const Napi::Value &value);
 
 #undef AEJS_CPP_DESCRIPTOR_CLASS_COMMON
-
+} // namespace Descriptors
 } // namespace ae_js_bridge

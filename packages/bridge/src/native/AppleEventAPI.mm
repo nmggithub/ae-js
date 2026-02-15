@@ -3,25 +3,17 @@
 #include "AEDescriptor.h"
 #include "OSError.h"
 
+#include <Carbon/Carbon.h>
 #include <CoreServices/CoreServices.h>
-#include <MacTypes.h>
-#include <OSAKit/OSAKit.h>
 #include <napi.h>
 
-#include <algorithm>
 #include <atomic>
 #include <chrono>
-#include <condition_variable>
-#include <cstdint>
-#include <exception>
-#include <map>
-#include <memory>
 #include <mutex>
 #include <string>
 #include <thread>
 #include <unordered_map>
 #include <unordered_set>
-#include <utility>
 #include <vector>
 
 namespace ae_js_bridge {
@@ -79,7 +71,7 @@ public:
     }
 
     AEDesc *result = replyDesc;
-    Napi::Value wrapped = CopyAndWrapAEDescOrThrow(env, result);
+    Napi::Value wrapped = Descriptors::CopyAndWrapAEDescOrThrow(env, result);
     if (env.IsExceptionPending()) {
       Napi::Error error = env.GetAndClearPendingException();
       deferred.Reject(error.Value());
@@ -113,7 +105,7 @@ Napi::Value SendAppleEvent(const Napi::CallbackInfo &info) {
     return env.Null();
   }
 
-  auto *wrapper = UnwrapDescriptor(info[0]);
+  auto *wrapper = Descriptors::UnwrapDescriptor(info[0]);
   if (!wrapper) {
     Napi::Error::New(env, "Invalid event descriptor")
         .ThrowAsJavaScriptException();
@@ -155,8 +147,10 @@ namespace Handling {
   "Defer unhandle (e.g. setTimeout) and retry."
 
 namespace Carbon {
-static OSErr AppleEventHandlerThunk(const AppleEvent *event, AppleEvent *reply,
-                                    SRefCon refCon);
+namespace {
+OSErr AppleEventHandlerThunk(const AppleEvent *event, AppleEvent *reply,
+                             SRefCon refCon);
+}
 } // namespace Carbon
 
 namespace Handlers {
@@ -166,11 +160,6 @@ struct Key {
 
   bool operator==(const Key &other) const {
     return eventClass == other.eventClass && eventID == other.eventID;
-  }
-
-  bool operator<(const Key &other) const {
-    return eventClass < other.eventClass ||
-           (eventClass == other.eventClass && eventID < other.eventID);
   }
 };
 
@@ -189,7 +178,8 @@ struct Context {
 };
 
 std::mutex mutex;
-std::unordered_map<Key, std::unique_ptr<Context>, KeyHasher> map;
+std::unordered_map<Key, std::shared_ptr<Context>, KeyHasher> map;
+std::unordered_map<Context *, std::shared_ptr<Context>> byRefCon;
 std::atomic<uint32_t> activeCallbackCount{0};
 
 bool ParseKeyOrThrow(const Napi::Env &env, const Napi::Value &classValue,
@@ -233,7 +223,8 @@ std::unordered_set<napi_env> setWithCleanupHooks;
 std::mutex poisonedSetMutex;
 std::unordered_set<napi_env> poisonedSet;
 
-static void CleanupEnvAppleEventState(void *data) {
+namespace {
+void CleanupEnvAppleEventState(void *data) {
   auto env = static_cast<napi_env>(data);
 
   AEEventHandlerUPP envUPP = nullptr;
@@ -244,7 +235,13 @@ static void CleanupEnvAppleEventState(void *data) {
       envUPP = uppIt->second;
       UPPs::byEnv.erase(uppIt);
     }
+  }
+  {
+    std::lock_guard<std::mutex> lock(Envs::setWithCleanupHooksMutex);
     Envs::setWithCleanupHooks.erase(env);
+  }
+  {
+    std::lock_guard<std::mutex> lock(Envs::poisonedSetMutex);
     Envs::poisonedSet.erase(env);
   }
 
@@ -269,14 +266,18 @@ static void CleanupEnvAppleEventState(void *data) {
   {
     std::lock_guard<std::mutex> lock(Handlers::mutex);
     for (const auto &key : keysForEnv) {
-      Handlers::map.erase(key);
+      auto it = Handlers::map.find(key);
+      if (it != Handlers::map.end()) {
+        Handlers::byRefCon.erase(it->second.get());
+        Handlers::map.erase(it);
+      }
     }
   }
 
   DisposeAEEventHandlerUPP(envUPP);
 }
 
-static napi_status EnsureEnvCleanupHookRegistered(napi_env env) {
+napi_status EnsureEnvCleanupHookRegistered(napi_env env) {
   std::lock_guard<std::mutex> lock(Envs::setWithCleanupHooksMutex);
   if (Envs::setWithCleanupHooks.find(env) != Envs::setWithCleanupHooks.end()) {
     return napi_ok;
@@ -290,19 +291,21 @@ static napi_status EnsureEnvCleanupHookRegistered(napi_env env) {
   return status;
 }
 
-static bool IsEnvPoisoned(napi_env env) {
+bool IsEnvPoisoned(napi_env env) {
   std::lock_guard<std::mutex> lock(Envs::poisonedSetMutex);
   return Envs::poisonedSet.find(env) != Envs::poisonedSet.end();
 }
 
-static void MarkEnvPoisoned(napi_env env) {
+void MarkEnvPoisoned(napi_env env) {
   std::lock_guard<std::mutex> lock(Envs::poisonedSetMutex);
   poisonedSet.insert(env);
 }
+} // namespace
 } // namespace Envs
 
 namespace UPPs {
-static AEEventHandlerUPP GetAEHandlerUPP(napi_env env) {
+namespace {
+AEEventHandlerUPP GetAEHandlerUPP(napi_env env) {
   std::lock_guard<std::mutex> lock(UPPs::byEnvMutex);
   auto it = UPPs::byEnv.find(env);
   if (it == UPPs::byEnv.end()) {
@@ -311,18 +314,23 @@ static AEEventHandlerUPP GetAEHandlerUPP(napi_env env) {
   return it->second;
 }
 
-static AEEventHandlerUPP EnsureAEHandlerUPP(napi_env env) {
+AEEventHandlerUPP EnsureAEHandlerUPP(napi_env env) {
   AEEventHandlerUPP existingUPP = nullptr;
   bool hasCleanupHook = false;
+
+  if (Envs::IsEnvPoisoned(env)) {
+    return nullptr;
+  }
+
   {
     std::lock_guard<std::mutex> lock(UPPs::byEnvMutex);
-    if (Envs::poisonedSet.find(env) != Envs::poisonedSet.end()) {
-      return nullptr;
-    }
     auto it = UPPs::byEnv.find(env);
     if (it != UPPs::byEnv.end()) {
       existingUPP = it->second;
     }
+  }
+  {
+    std::lock_guard<std::mutex> lock(Envs::setWithCleanupHooksMutex);
     hasCleanupHook =
         Envs::setWithCleanupHooks.find(env) != Envs::setWithCleanupHooks.end();
   }
@@ -356,15 +364,17 @@ static AEEventHandlerUPP EnsureAEHandlerUPP(napi_env env) {
   UPPs::byEnv[env] = handler;
   return handler;
 }
+} // namespace
 } // namespace UPPs
 
 namespace Carbon {
-static OSErr MakeErrorReply(AppleEvent *reply, OSStatus errorCode,
-                            const std::string &errorMessage,
-                            bool clearReplyIfNonEmpty = false);
-static bool
-GetAppleEventTimeoutDuration(const AppleEvent *event,
-                             std::chrono::milliseconds *outDuration);
+namespace {
+OSErr MakeErrorReply(AppleEvent *reply, OSStatus errorCode,
+                     const std::string &errorMessage,
+                     bool clearReplyIfNonEmpty = false);
+bool GetAppleEventTimeoutDuration(const AppleEvent *event,
+                                  std::chrono::milliseconds *outDuration);
+} // namespace
 } // namespace Carbon
 
 namespace Node {
@@ -390,6 +400,7 @@ private:
   std::chrono::milliseconds timeoutDuration_{};
   bool hasTimeout_ = false;
   std::thread::id suspendedEventThreadId_;
+  bool resumed_ = false;
 
 public:
   ResumeSuspendedEventWorker(Napi::Env env, std::shared_ptr<PromiseState> state,
@@ -401,6 +412,21 @@ public:
         reply_(reply), timeoutDuration_(timeoutDuration),
         hasTimeout_(hasTimeout),
         suspendedEventThreadId_(suspendedEventThreadId) {}
+
+  ~ResumeSuspendedEventWorker() override {
+    if (suspendedEvent_) {
+      if (!resumed_) {
+        AEDisposeDesc(suspendedEvent_);
+      }
+      delete suspendedEvent_;
+    }
+    if (reply_) {
+      if (!resumed_) {
+        AEDisposeDesc(reply_);
+      }
+      delete reply_;
+    }
+  }
 
   void Execute() override {
     std::unique_lock<std::mutex> lock(state_->mutex);
@@ -452,13 +478,17 @@ public:
                              "Failed to build reply for suspended Apple event");
     }
 
-    AEResumeTheCurrentEvent(suspendedEvent_, reply_,
-                            reinterpret_cast<AEEventHandlerUPP>(kAENoDispatch),
-                            0);
+    OSErr resumeErr = AEResumeTheCurrentEvent(
+        suspendedEvent_, reply_,
+        reinterpret_cast<AEEventHandlerUPP>(kAENoDispatch), 0);
+    if (resumeErr != noErr) {
+      return; // We can't do anything about this, so we just give up.
+    }
+    resumed_ = true;
   }
 };
 
-static std::string PromiseRejectionToMessage(const Napi::CallbackInfo &info) {
+std::string PromiseRejectionToMessage(const Napi::CallbackInfo &info) {
   Napi::Env env = info.Env();
   if (info.Length() == 0 || info[0].IsUndefined() || info[0].IsNull()) {
     return "JS handler promise rejected without a reason";
@@ -615,7 +645,7 @@ OSErr ApplyResultObjectToReply(const Napi::Env &env, Napi::Object &resultObject,
                                     "that wasn't a valid FourCharCode");
     }
     Napi::Value value = resultObject.Get(key);
-    auto *wrapper = UnwrapDescriptor(value);
+    auto *wrapper = Descriptors::UnwrapDescriptor(value);
     if (!wrapper) {
       return Carbon::MakeErrorReply(
           reply, errAEWrongDataType,
@@ -638,10 +668,10 @@ OSErr InvokeJSHandlerOnMainThreadOrThrow(const Napi::Env &env,
       return Carbon::MakeErrorReply(reply, errAEDescNotFound, "Missing event");
     }
 
-    auto wrappedEvent = CopyAndWrapAEDescOrThrow(env, event);
+    auto wrappedEvent = Descriptors::CopyAndWrapAEDescOrThrow(env, event);
     if (!wrappedEvent.IsObject() ||
         !wrappedEvent.As<Napi::Object>().InstanceOf(
-            AEEventDescriptor::constructor.Value())) {
+            Descriptors::AEEventDescriptor::constructor.Value())) {
       return Carbon::MakeErrorReply(reply, errAENotAppleEvent, "Invalid event");
     }
 
@@ -696,19 +726,18 @@ OSErr ClearAppleEventReply(AppleEvent *reply) {
   }
 
   for (long i = count; i >= 1; i--) {
-    AEKeyword *keyword = nullptr;
-    AEDesc *desc = new AEDesc;
+    AEKeyword keyword = 0;
+    AEDesc desc = {};
 
-    OSErr getErr = AEGetNthDesc(reply, i, typeWildCard, keyword, desc);
+    OSErr getErr = AEGetNthDesc(reply, i, typeWildCard, &keyword, &desc);
 
     if (getErr != noErr) {
       return getErr;
     }
 
-    AEDisposeDesc(desc);
-    delete desc;
+    AEDisposeDesc(&desc);
 
-    OSErr deleteErr = AEDeleteParam(reply, *keyword);
+    OSErr deleteErr = AEDeleteParam(reply, keyword);
     if (deleteErr != noErr) {
       return deleteErr;
     }
@@ -716,9 +745,10 @@ OSErr ClearAppleEventReply(AppleEvent *reply) {
 
   return noErr;
 }
-static OSErr MakeErrorReply(AppleEvent *reply, OSStatus errorCode,
-                            const std::string &errorMessage,
-                            bool clearReplyIfNonEmpty) {
+namespace {
+OSErr MakeErrorReply(AppleEvent *reply, OSStatus errorCode,
+                     const std::string &errorMessage,
+                     bool clearReplyIfNonEmpty) {
   long itemCount = 0;
   OSErr itemCountErr = AECountItems(reply, &itemCount);
   if (itemCountErr != noErr) {
@@ -734,32 +764,36 @@ static OSErr MakeErrorReply(AppleEvent *reply, OSStatus errorCode,
       return errAECorruptData;
     }
   }
-  AEDesc *errorNumberDesc = new AEDesc;
+  AEDesc errorNumberDesc = {};
   OSErr errorNumCreateErr =
-      AECreateDesc(typeSInt32, &errorCode, sizeof(errorCode), errorNumberDesc);
+      AECreateDesc(typeSInt32, &errorCode, sizeof(errorCode), &errorNumberDesc);
   if (errorNumCreateErr != noErr) {
     return errorNumCreateErr;
   }
-  AEDesc *errorMessageDesc = new AEDesc;
+  AEDesc errorMessageDesc = {};
   OSErr errorMessageCreateErr = AECreateDesc(
-      typeChar, errorMessage.c_str(), errorMessage.size(), errorMessageDesc);
+      typeChar, errorMessage.c_str(), errorMessage.size(), &errorMessageDesc);
   if (errorMessageCreateErr != noErr) {
+    AEDisposeDesc(&errorNumberDesc);
     return errorMessageCreateErr;
   }
-  OSErr putErr = AEPutParamDesc(reply, kOSAErrorNumber, errorNumberDesc);
+  OSErr putErr = AEPutParamDesc(reply, kOSAErrorNumber, &errorNumberDesc);
   if (putErr != noErr) {
+    AEDisposeDesc(&errorMessageDesc);
+    AEDisposeDesc(&errorNumberDesc);
     return putErr;
   }
-  putErr = AEPutParamDesc(reply, kOSAErrorMessage, errorMessageDesc);
+  putErr = AEPutParamDesc(reply, kOSAErrorMessage, &errorMessageDesc);
+  AEDisposeDesc(&errorMessageDesc);
+  AEDisposeDesc(&errorNumberDesc);
   if (putErr != noErr) {
     return putErr;
   }
   return noErr;
 }
 
-static bool
-GetAppleEventTimeoutDuration(const AppleEvent *event,
-                             std::chrono::milliseconds *outDuration) {
+bool GetAppleEventTimeoutDuration(const AppleEvent *event,
+                                  std::chrono::milliseconds *outDuration) {
   if (!event || !outDuration) {
     return false;
   }
@@ -789,13 +823,23 @@ GetAppleEventTimeoutDuration(const AppleEvent *event,
 //    its own event handlers for the same event IDs. If we use `events` instead
 //    of `commands` in the scripting definition, that mitigates that behavior,
 //    but we should still be careful. We send error replies instead.
-static OSErr AppleEventHandlerThunk(const AppleEvent *event, AppleEvent *reply,
-                                    SRefCon refCon) {
-  Handlers::Context *ctx = reinterpret_cast<Handlers::Context *>(refCon);
-  if (!ctx) {
+OSErr AppleEventHandlerThunk(const AppleEvent *event, AppleEvent *reply,
+                             SRefCon refCon) {
+  Handlers::Context *rawCtx = reinterpret_cast<Handlers::Context *>(refCon);
+  if (!rawCtx) {
     return MakeErrorReply(reply, paramErr, "Missing handler context");
   }
-  Handlers::activeCallbackCount.fetch_add(1, std::memory_order_acq_rel);
+  std::shared_ptr<Handlers::Context> ctxRef;
+  {
+    std::lock_guard<std::mutex> lock(Handlers::mutex);
+    auto it = Handlers::byRefCon.find(rawCtx);
+    if (it == Handlers::byRefCon.end()) {
+      return MakeErrorReply(reply, paramErr, "Missing handler context");
+    }
+    ctxRef = it->second;
+    Handlers::activeCallbackCount.fetch_add(1, std::memory_order_acq_rel);
+  }
+  Handlers::Context *ctx = ctxRef.get();
   auto finish = []() {
     Handlers::activeCallbackCount.fetch_sub(1, std::memory_order_acq_rel);
   };
@@ -839,7 +883,9 @@ static OSErr AppleEventHandlerThunk(const AppleEvent *event, AppleEvent *reply,
       });
   if (status != napi_ok) {
     finish();
-    return MakeErrorReply(reply, status, "Failed to block main thread");
+    return MakeErrorReply(reply, errOSAGeneralError,
+                          "Failed to block main thread. napi_status: " +
+                              std::to_string(status));
   }
 
   std::chrono::milliseconds timeoutDuration{};
@@ -869,6 +915,7 @@ static OSErr AppleEventHandlerThunk(const AppleEvent *event, AppleEvent *reply,
   finish();
   return result;
 }
+} // namespace
 } // namespace Carbon
 
 Napi::Value HandleAppleEvent(const Napi::CallbackInfo &info) {
@@ -901,19 +948,19 @@ Napi::Value HandleAppleEvent(const Napi::CallbackInfo &info) {
     Napi::ThreadSafeFunction tsfn = Napi::ThreadSafeFunction::New(
         env, info[2].As<Napi::Function>(), "AppleEventHandler", 0, 1);
 
-    auto ctxPtr = std::make_unique<Handlers::Context>(Handlers::Context{
+    auto ctxRef = std::make_shared<Handlers::Context>(Handlers::Context{
         env, std::this_thread::get_id(),
         Napi::Persistent(info[2].As<Napi::Function>()), tsfn});
 
-    Handlers::Context *raw = ctxPtr.get();
+    Handlers::Context *raw = ctxRef.get();
 
-    auto [insertedIt, didInsert] =
-        Handlers::map.emplace(key, std::move(ctxPtr));
+    auto [insertedIt, didInsert] = Handlers::map.emplace(key, ctxRef);
     if (!didInsert) {
       Napi::Error::New(env, "Failed to register handler")
           .ThrowAsJavaScriptException();
       return env.Undefined();
     }
+    Handlers::byRefCon.emplace(raw, ctxRef);
 
     ctx = raw;
   }
@@ -922,6 +969,7 @@ Napi::Value HandleAppleEvent(const Napi::CallbackInfo &info) {
   if (!handlerUPP) {
     {
       std::lock_guard<std::mutex> lock(Handlers::mutex);
+      Handlers::byRefCon.erase(ctx);
       Handlers::map.erase(key);
     }
     const char *msg = Envs::IsEnvPoisoned(env)
@@ -936,6 +984,7 @@ Napi::Value HandleAppleEvent(const Napi::CallbackInfo &info) {
 
   if (err != noErr) {
     std::lock_guard<std::mutex> lock(Handlers::mutex);
+    Handlers::byRefCon.erase(ctx);
     Handlers::map.erase(key);
     OSError::Throw(env, err, "AEInstallEventHandler failed");
     return env.Undefined();
@@ -964,15 +1013,22 @@ Napi::Value UnhandleAppleEvent(const Napi::CallbackInfo &info) {
     return env.Undefined();
   }
 
-  if (Handlers::activeCallbackCount.load(std::memory_order_acquire) != 0) {
-    Napi::Error::New(env, UNHANDLE_DURING_CALLBACK_ERROR_MESSAGE)
-        .ThrowAsJavaScriptException();
-    return env.Undefined();
+  {
+    std::lock_guard<std::mutex> lock(Handlers::mutex);
+    if (Handlers::activeCallbackCount.load(std::memory_order_acquire) != 0) {
+      Napi::Error::New(env, UNHANDLE_DURING_CALLBACK_ERROR_MESSAGE)
+          .ThrowAsJavaScriptException();
+      return env.Undefined();
+    }
   }
 
   AEEventHandlerUPP handlerUPP = UPPs::GetAEHandlerUPP(env);
   if (!handlerUPP) {
     std::lock_guard<std::mutex> lock(Handlers::mutex);
+    auto it = Handlers::map.find(key);
+    if (it != Handlers::map.end()) {
+      Handlers::byRefCon.erase(it->second.get());
+    }
     Handlers::map.erase(key);
     return env.Undefined();
   }
@@ -984,13 +1040,15 @@ Napi::Value UnhandleAppleEvent(const Napi::CallbackInfo &info) {
     return env.Undefined();
   }
   std::lock_guard<std::mutex> lock(Handlers::mutex);
+  auto it = Handlers::map.find(key);
+  if (it != Handlers::map.end()) {
+    Handlers::byRefCon.erase(it->second.get());
+  }
   Handlers::map.erase(key);
   return env.Undefined();
 }
 } // namespace Handling
-} // namespace AppleEventAPI
-
-void InitAppleEventAPI(Napi::Env env, Napi::Object exports) {
+void Init(Napi::Env env, Napi::Object exports) {
   exports.Set("sendAppleEvent",
               Napi::Function::New(env, AppleEventAPI::Sending::SendAppleEvent));
   exports.Set(
@@ -1000,5 +1058,5 @@ void InitAppleEventAPI(Napi::Env env, Napi::Object exports) {
       "unhandleAppleEvent",
       Napi::Function::New(env, AppleEventAPI::Handling::UnhandleAppleEvent));
 }
-
+} // namespace AppleEventAPI
 } // namespace ae_js_bridge

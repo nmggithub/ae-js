@@ -4,6 +4,7 @@
 #include <cstdint>
 
 namespace ae_js_bridge {
+namespace Descriptors {
 namespace {
 
 #define AEJS_DEFINE_EMPTY_JS_PROPERTIES(ClassName)                             \
@@ -51,6 +52,12 @@ bool ReadAttributeDescOrThrow(Napi::Env env, const AEDesc *source,
 Napi::Object ReadKeyedItemsOrThrow(Napi::Env env, const AEDesc *source,
                                    const char *countError,
                                    const char *itemError) {
+  if (!source) {
+    Napi::Error::New(env, "Uninitialized descriptor")
+        .ThrowAsJavaScriptException();
+    return Napi::Object::New(env);
+  }
+
   long count = 0;
   OSErr countErr = AECountItems(source, &count);
   if (countErr != noErr) {
@@ -108,6 +115,7 @@ bool InsertKeywordMap(Napi::Env env, AEDesc *target, const Napi::Object &map,
     OSErr err = putFn(target, keyword, wrapper->GetRawDescriptor());
     if (err != noErr) {
       OSError::Throw(env, err, putError);
+      return false;
     }
   }
   return true;
@@ -590,5 +598,5 @@ void AEUnknownDescriptor::InitFromJS(const Napi::CallbackInfo &info) {
 AEJS_DEFINE_EMPTY_JS_PROPERTIES(AEUnknownDescriptor)
 
 #undef AEJS_DEFINE_EMPTY_JS_PROPERTIES
-
+} // namespace Descriptors
 } // namespace ae_js_bridge
