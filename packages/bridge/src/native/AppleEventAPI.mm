@@ -203,9 +203,17 @@ bool ParseKeyOrThrow(const Napi::Env &env, const Napi::Value &classValue,
 
   try {
     outKey->eventClass =
-        StringToFourCharCodeOrThrow(env, classValue.As<Napi::String>());
+        StringToFourCharCode(classValue.As<Napi::String>().Utf8Value());
+    if (outKey->eventClass == 0) {
+      Napi::Error::New(env, "Invalid event class").ThrowAsJavaScriptException();
+      return false;
+    }
     outKey->eventID =
-        StringToFourCharCodeOrThrow(env, idValue.As<Napi::String>());
+        StringToFourCharCode(idValue.As<Napi::String>().Utf8Value());
+    if (outKey->eventID == 0) {
+      Napi::Error::New(env, "Invalid event ID").ThrowAsJavaScriptException();
+      return false;
+    }
   } catch (const Napi::Error &error) {
     error.ThrowAsJavaScriptException();
     return false;
@@ -351,7 +359,7 @@ static AEEventHandlerUPP EnsureAEHandlerUPP(napi_env env) {
 } // namespace UPPs
 
 namespace Carbon {
-static OSErr MakeErrorReply(AppleEvent *reply, OSErr errorCode,
+static OSErr MakeErrorReply(AppleEvent *reply, OSStatus errorCode,
                             const std::string &errorMessage);
 }
 
@@ -397,13 +405,16 @@ OSErr InvokeJSHandlerOnMainThreadOrThrow(const Napi::Env &env,
             "JS handler returned a property keyword that wasn't a string");
       }
       FourCharCode keyword =
-          StringToFourCharCodeOrThrow(env, key.As<Napi::String>());
+          StringToFourCharCode(key.As<Napi::String>().Utf8Value());
+      if (keyword == 0) {
+        return Carbon::MakeErrorReply(reply, errAEWrongDataType,
+                                      "JS handler returned a property keyword "
+                                      "that wasn't a valid FourCharCode");
+      }
       Napi::Value value = resultObject.Get(key);
-      // The function expects a string error message, so we pass one even
-      //    though we'll actually end up swallowing any JS exception that
-      //    it throws (since we're not on a JS path here).
       auto *wrapper = UnwrapDescriptorOrThrow(
-          env, value, "Reply property values must be descriptors");
+          env, value,
+          "JS handler returned a property value that wasn't a descriptor");
       if (!wrapper) {
         return Carbon::MakeErrorReply(
             reply, errAEWrongDataType,
@@ -416,12 +427,14 @@ OSErr InvokeJSHandlerOnMainThreadOrThrow(const Napi::Env &env,
       }
     }
     return noErr;
-  } catch (const Napi::Error &) {
+  } catch (const Napi::Error &error) {
     return Carbon::MakeErrorReply(reply, errOSAGeneralError,
-                                  "AEJS encountered an internal error");
-  } catch (const std::exception &) {
+                                  "AEJS encountered an internal error: " +
+                                      error.Message());
+  } catch (const std::exception &exception) {
     return Carbon::MakeErrorReply(reply, errOSAGeneralError,
-                                  "AEJS encountered an internal error");
+                                  "AEJS encountered an internal error: " +
+                                      std::string(exception.what()));
   } catch (...) {
     return Carbon::MakeErrorReply(reply, errOSAGeneralError,
                                   "AEJS encountered an internal error");
@@ -430,18 +443,17 @@ OSErr InvokeJSHandlerOnMainThreadOrThrow(const Napi::Env &env,
 } // namespace Node
 
 namespace Carbon {
-static OSErr MakeErrorReply(AppleEvent *reply, OSErr errorCode,
+static OSErr MakeErrorReply(AppleEvent *reply, OSStatus errorCode,
                             const std::string &errorMessage) {
   AEDesc *errorNumberDesc = new AEDesc;
-  OSErr errorNumCreateErr = AECreateDesc(kOSAErrorNumber, &errorCode,
-                                         sizeof(errorCode), errorNumberDesc);
+  OSErr errorNumCreateErr =
+      AECreateDesc(typeSInt32, &errorCode, sizeof(errorCode), errorNumberDesc);
   if (errorNumCreateErr != noErr) {
     return errorNumCreateErr;
   }
   AEDesc *errorMessageDesc = new AEDesc;
-  OSErr errorMessageCreateErr =
-      AECreateDesc(kOSAErrorMessage, errorMessage.c_str(), errorMessage.size(),
-                   errorMessageDesc);
+  OSErr errorMessageCreateErr = AECreateDesc(
+      typeChar, errorMessage.c_str(), errorMessage.size(), errorMessageDesc);
   if (errorMessageCreateErr != noErr) {
     return errorMessageCreateErr;
   }

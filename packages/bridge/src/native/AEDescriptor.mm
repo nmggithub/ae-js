@@ -74,7 +74,7 @@ Napi::Object ReadKeyedItemsOrThrow(Napi::Env env, const AEDesc *source,
     if (env.IsExceptionPending()) {
       return Napi::Object::New(env);
     }
-    result.Set(FourCharCodeToStringOrThrow(env, keyword), wrappedItem);
+    result.Set(FourCharCodeToString(keyword), wrappedItem);
   }
 
   return result;
@@ -93,7 +93,11 @@ bool InsertKeywordMap(Napi::Env env, AEDesc *target, const Napi::Object &map,
     }
 
     FourCharCode keyword =
-        StringToFourCharCodeOrThrow(env, keyValue.As<Napi::String>());
+        StringToFourCharCode(keyValue.As<Napi::String>().Utf8Value());
+    if (keyword == 0) {
+      Napi::Error::New(env, "Invalid keyword").ThrowAsJavaScriptException();
+      return false;
+    }
 
     Napi::Value entry = map.Get(keyValue);
     auto *wrapper = UnwrapDescriptorOrThrow(env, entry, invalidValueMessage);
@@ -224,7 +228,12 @@ void AEDataDescriptor::InitFromJS(const Napi::CallbackInfo &info) {
   }
 
   FourCharCode type =
-      StringToFourCharCodeOrThrow(env, info[0].As<Napi::String>());
+      StringToFourCharCode(info[0].As<Napi::String>().Utf8Value());
+  if (type == 0) {
+    Napi::Error::New(env, "Invalid descriptor type")
+        .ThrowAsJavaScriptException();
+    return;
+  }
   Napi::Uint8Array array = info[1].As<Napi::Uint8Array>();
 
   desc = new AEDesc;
@@ -278,7 +287,12 @@ void AEListDescriptor::InitFromJS(const Napi::CallbackInfo &info) {
   }
 
   FourCharCode type =
-      StringToFourCharCodeOrThrow(env, info[0].As<Napi::String>());
+      StringToFourCharCode(info[0].As<Napi::String>().Utf8Value());
+  if (type == 0) {
+    Napi::Error::New(env, "Invalid descriptor type")
+        .ThrowAsJavaScriptException();
+    return;
+  }
   Napi::Array items = info[1].As<Napi::Array>();
 
   desc = new AEDesc;
@@ -353,7 +367,12 @@ void AERecordDescriptor::InitFromJS(const Napi::CallbackInfo &info) {
   }
 
   FourCharCode type =
-      StringToFourCharCodeOrThrow(env, info[0].As<Napi::String>());
+      StringToFourCharCode(info[0].As<Napi::String>().Utf8Value());
+  if (type == 0) {
+    Napi::Error::New(env, "Invalid descriptor type")
+        .ThrowAsJavaScriptException();
+    return;
+  }
   Napi::Object fields = info[1].As<Napi::Object>();
 
   desc = new AEDesc;
@@ -403,9 +422,17 @@ void AEEventDescriptor::InitFromJS(const Napi::CallbackInfo &info) {
   }
 
   FourCharCode eventClass =
-      StringToFourCharCodeOrThrow(env, info[0].As<Napi::String>());
+      StringToFourCharCode(info[0].As<Napi::String>().Utf8Value());
+  if (eventClass == 0) {
+    Napi::Error::New(env, "Invalid event class").ThrowAsJavaScriptException();
+    return;
+  }
   FourCharCode eventID =
-      StringToFourCharCodeOrThrow(env, info[1].As<Napi::String>());
+      StringToFourCharCode(info[1].As<Napi::String>().Utf8Value());
+  if (eventID == 0) {
+    Napi::Error::New(env, "Invalid event ID").ThrowAsJavaScriptException();
+    return;
+  }
 
   auto *targetWrapper =
       UnwrapDescriptorOrThrow(env, info[2], "Invalid target descriptor");
@@ -456,7 +483,7 @@ AEEventDescriptor::GetEventClassOrThrow(const Napi::CallbackInfo &info) {
                             "AEGetAttributePtr(keyEventClassAttr) failed")) {
     return env.Null();
   }
-  return FourCharCodeToStringOrThrow(env, eventClass);
+  return Napi::String::New(env, FourCharCodeToString(eventClass));
 }
 
 Napi::Value
@@ -467,7 +494,7 @@ AEEventDescriptor::GetEventIDOrThrow(const Napi::CallbackInfo &info) {
                             "AEGetAttributePtr(keyEventIDAttr) failed")) {
     return env.Null();
   }
-  return FourCharCodeToStringOrThrow(env, eventID);
+  return Napi::String::New(env, FourCharCodeToString(eventID));
 }
 
 Napi::Value
@@ -522,7 +549,12 @@ AEEventDescriptor::GetAttributeOrThrow(const Napi::CallbackInfo &info) {
   }
 
   FourCharCode keyword =
-      StringToFourCharCodeOrThrow(env, info[0].As<Napi::String>());
+      StringToFourCharCode(info[0].As<Napi::String>().Utf8Value());
+  if (keyword == 0) {
+    Napi::Error::New(env, "Invalid attribute keyword")
+        .ThrowAsJavaScriptException();
+    return env.Undefined();
+  }
   AEDesc attributeDesc;
   OSErr err = AEGetAttributeDesc(desc, keyword, typeWildCard, &attributeDesc);
   if (err != noErr) {

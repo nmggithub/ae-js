@@ -67,7 +67,8 @@ public:
   }
 
   Napi::Value GetDescriptorTypeOrThrow(const Napi::CallbackInfo &info) {
-    return FourCharCodeToStringOrThrow(info.Env(), GetRawDescriptorType());
+    return Napi::String::New(info.Env(),
+                             FourCharCodeToString(GetRawDescriptorType()));
   }
 
   Napi::Value AsOrThrow(const Napi::CallbackInfo &info) {
@@ -85,7 +86,12 @@ public:
     }
 
     FourCharCode targetType =
-        StringToFourCharCodeOrThrow(env, info[0].As<Napi::String>());
+        StringToFourCharCode(info[0].As<Napi::String>().Utf8Value());
+    if (targetType == 0) {
+      Napi::Error::New(env, "Invalid descriptor type")
+          .ThrowAsJavaScriptException();
+      return env.Null();
+    }
 
     AEDesc *coerced = new AEDesc;
     OSErr err = AECoerceDesc(desc, targetType, coerced);
