@@ -361,7 +361,7 @@ static AEEventHandlerUPP EnsureAEHandlerUPP(napi_env env) {
 namespace Carbon {
 static OSErr MakeErrorReply(AppleEvent *reply, OSStatus errorCode,
                             const std::string &errorMessage);
-}
+} // namespace Carbon
 
 namespace Node {
 OSErr ApplyResultObjectToReply(const Napi::Env &env, Napi::Object &resultObject,
@@ -495,7 +495,7 @@ GetAppleEventTimeoutDuration(const AppleEvent *event,
   *outDuration = std::chrono::milliseconds(
       (static_cast<int64_t>(timeoutTicks) * 1000 + 59) / 60);
   return true;
-}
+} // namespace Carbon
 
 // The main thread handler thunk.
 // WARNING: We shouldn't return `errAEEventNotHandled` here, as it will defer to
