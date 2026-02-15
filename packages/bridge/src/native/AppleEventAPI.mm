@@ -360,7 +360,8 @@ static AEEventHandlerUPP EnsureAEHandlerUPP(napi_env env) {
 
 namespace Carbon {
 static OSErr MakeErrorReply(AppleEvent *reply, OSStatus errorCode,
-                            const std::string &errorMessage);
+                            const std::string &errorMessage,
+                            bool clearReplyIfNonEmpty = false);
 static bool
 GetAppleEventTimeoutDuration(const AppleEvent *event,
                              std::chrono::milliseconds *outDuration);
@@ -658,8 +659,56 @@ OSErr InvokeJSHandlerOnMainThreadOrThrow(const Napi::Env &env,
 } // namespace Node
 
 namespace Carbon {
+OSErr ClearAppleEventReply(AppleEvent *reply) {
+  if (reply == nullptr) {
+    return paramErr;
+  }
+
+  long count = 0;
+  OSErr countErr = AECountItems(reply, &count);
+  if (countErr != noErr) {
+    return countErr;
+  }
+
+  for (long i = count; i >= 1; i--) {
+    AEKeyword *keyword = nullptr;
+    AEDesc *desc = new AEDesc;
+
+    OSErr getErr = AEGetNthDesc(reply, i, typeWildCard, keyword, desc);
+
+    if (getErr != noErr) {
+      return getErr;
+    }
+
+    AEDisposeDesc(desc);
+    delete desc;
+
+    OSErr deleteErr = AEDeleteParam(reply, *keyword);
+    if (deleteErr != noErr) {
+      return deleteErr;
+    }
+  }
+
+  return noErr;
+}
 static OSErr MakeErrorReply(AppleEvent *reply, OSStatus errorCode,
-                            const std::string &errorMessage) {
+                            const std::string &errorMessage,
+                            bool clearReplyIfNonEmpty) {
+  long itemCount = 0;
+  OSErr itemCountErr = AECountItems(reply, &itemCount);
+  if (itemCountErr != noErr) {
+    return itemCountErr;
+  }
+  if (itemCount > 0) {
+    if (clearReplyIfNonEmpty) {
+      OSErr clearErr = ClearAppleEventReply(reply);
+      if (clearErr != noErr) {
+        return clearErr;
+      }
+    } else {
+      return errAECorruptData;
+    }
+  }
   AEDesc *errorNumberDesc = new AEDesc;
   OSErr errorNumCreateErr =
       AECreateDesc(typeSInt32, &errorCode, sizeof(errorCode), errorNumberDesc);
