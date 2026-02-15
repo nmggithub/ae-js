@@ -65,8 +65,17 @@ handleJSAppleEvent(
 
 handleJSAppleEvent(
     'aejs',
-    ' ERR',
+    'ERR1',
     (event, replyExpected) => {
+        throw new Error('What did you expect?');
+    }
+);
+
+handleJSAppleEvent(
+    'aejs',
+    'ERR2',
+    async (event, replyExpected) => {
+        await new Promise(resolve => setTimeout(resolve, 7000));
         throw new Error('What did you expect?');
     }
 );

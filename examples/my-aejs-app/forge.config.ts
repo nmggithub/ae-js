@@ -47,7 +47,14 @@ const scriptingDefinition = new Dictionary(
                         new Event(
                             {
                                 name: 'doError',
-                                code: 'aejs ERR',
+                                code: 'aejsERR1',
+                            },
+                            {} // No children
+                        ),
+                        new Event(
+                            {
+                                name: 'doAsyncError',
+                                code: 'aejsERR2',
                             },
                             {} // No children
                         ),
